@@ -1421,7 +1421,7 @@ class _NearbyTab extends StatelessWidget {
                 label: Text(
                   loading
                       ? 'Recherche en cours…'
-                      : 'Trouver les arrêts dans un rayon de ${radiusMeters} m',
+                      : 'Trouver les arrêts dans un rayon de $radiusMeters m',
                 ),
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(56),
