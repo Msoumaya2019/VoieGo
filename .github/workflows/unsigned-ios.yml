@@ -36,10 +36,12 @@ jobs:
 
       - name: Créer l’archive IPA non signée
         run: |
+          rm -rf build/ios/unsigned
           mkdir -p build/ios/unsigned/Payload
           cp -R build/ios/iphoneos/Runner.app build/ios/unsigned/Payload/
           cd build/ios/unsigned
-          ditto -c -k --sequesterRsrc Payload VoieGo-unsigned.ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload VoieGo-unsigned.ipa
+          unzip -Z1 VoieGo-unsigned.ipa | grep -qx 'Payload/Runner.app/'
 
       - name: Publier l’IPA comme artefact
         uses: actions/upload-artifact@v4
