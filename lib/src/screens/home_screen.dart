@@ -9,11 +9,8 @@ import '../models/transit.dart';
 import '../services/location_service.dart';
 
 const _navy = Color(0xFF07182F);
-const _panel = Color(0xFF102844);
-const _panelLight = Color(0xFF173553);
 const _cyan = Color(0xFF5FE3FF);
 const _yellow = Color(0xFFFFC83D);
-const _muted = Color(0xFFC4D4EE);
 const _green = Color(0xFF5DF18C);
 
 class HomeScreen extends StatefulWidget {
@@ -22,11 +19,15 @@ class HomeScreen extends StatefulWidget {
     required this.repository,
     required this.locationService,
     required this.demoMode,
+    required this.darkMode,
+    required this.onDarkModeChanged,
   });
 
   final TransitRepository repository;
   final LocationService locationService;
   final bool demoMode;
+  final bool darkMode;
+  final ValueChanged<bool> onDarkModeChanged;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -429,7 +430,7 @@ class _HomeScreenState extends State<HomeScreen> {
         0 => SafeArea(
         child: RefreshIndicator(
           color: _cyan,
-          backgroundColor: _panel,
+          backgroundColor: Theme.of(context).colorScheme.surface,
           onRefresh: _refresh,
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -531,10 +532,12 @@ class _HomeScreenState extends State<HomeScreen> {
           onLoad: _loadNearbyStops,
         ),
         _ => _SettingsTab(
+          darkMode: widget.darkMode,
           autoRefresh: _autoRefresh,
           refreshIntervalSeconds: _refreshIntervalSeconds,
           nearbyRadiusMeters: _nearbyRadiusMeters,
           favoritesCount: _favorites.length,
+          onDarkModeChanged: widget.onDarkModeChanged,
           onAutoRefreshChanged: (value) =>
               _updateSettings(autoRefresh: value),
           onRefreshIntervalChanged: (value) =>
@@ -547,7 +550,7 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedTab,
         onDestinationSelected: (index) => setState(() => _selectedTab = index),
-        backgroundColor: _panel,
+        backgroundColor: Theme.of(context).colorScheme.surface,
         indicatorColor: _cyan,
         destinations: const [
           NavigationDestination(
@@ -591,6 +594,8 @@ class _HomeScreenState extends State<HomeScreen> {
       return _NoDepartureCard(line: _line, onRetry: _refresh);
     }
     final isFavorite = _currentFavorite != null;
+    final departures = _snapshot?.departures ?? const <Departure>[];
+    final followingDeparture = departures.length > 1 ? departures[1] : null;
     return Column(
       key: ValueKey('${_mode.name}-${_line.code}'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -605,6 +610,10 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_snapshot?.alert case final alert?) ...[
           const SizedBox(height: 14),
           _AlertCard(alert: alert, onTap: () => _showTraffic(alert)),
+        ],
+        if (followingDeparture != null) ...[
+          const SizedBox(height: 12),
+          _FollowingDepartureCard(departure: followingDeparture),
         ],
         const SizedBox(height: 18),
         FilledButton.icon(
@@ -635,7 +644,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _showTraffic(TrafficAlert alert) {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: _panel,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       showDragHandle: true,
       builder: (context) => SafeArea(
         child: Padding(
@@ -651,7 +660,10 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 10),
               Text(
                 alert.message,
-                style: const TextStyle(color: _muted, fontSize: 16),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 16,
+                ),
               ),
               const SizedBox(height: 18),
               const Text(
@@ -693,7 +705,7 @@ class _Header extends StatelessWidget {
                     fontSize: 30,
                     height: 1,
                     fontWeight: FontWeight.w900,
-                    color: Colors.white,
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                   children: [
                     TextSpan(text: 'Voie'),
@@ -710,7 +722,7 @@ class _Header extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 9,
                   letterSpacing: 3,
-                  color: _muted,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -787,10 +799,14 @@ class _ModeSelector extends StatelessWidget {
                 constraints: const BoxConstraints(minWidth: 86),
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
-                  color: active ? const Color(0xFFEAE7FF) : _panel,
+                  color: active
+                      ? const Color(0xFFEAE7FF)
+                      : Theme.of(context).colorScheme.surface,
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(
-                    color: active ? Colors.white : const Color(0xFF28496D),
+                    color: active
+                        ? Colors.white
+                        : Theme.of(context).colorScheme.outline,
                     width: active ? 2 : 1,
                   ),
                 ),
@@ -809,7 +825,9 @@ class _ModeSelector extends StatelessWidget {
                     Text(
                       mode.label,
                       style: TextStyle(
-                        color: active ? _navy : Colors.white,
+                        color: active
+                            ? _navy
+                            : Theme.of(context).colorScheme.onSurface,
                         fontSize: 13,
                         fontWeight: FontWeight.w800,
                       ),
@@ -838,11 +856,13 @@ class _LineSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (lines.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 12),
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
         child: Text(
           'Aucune ligne ne correspond à cette recherche.',
-          style: TextStyle(color: _muted),
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
       );
     }
@@ -925,7 +945,10 @@ class _BusLineSearch extends StatelessWidget {
       onChanged: onChanged,
       keyboardType: TextInputType.text,
       textInputAction: TextInputAction.search,
-      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+      style: TextStyle(
+        color: Theme.of(context).colorScheme.onSurface,
+        fontWeight: FontWeight.w700,
+      ),
       decoration: InputDecoration(
         hintText: 'Rechercher un bus, ex. 256',
         helperText: controller.text.isEmpty
@@ -943,14 +966,14 @@ class _BusLineSearch extends StatelessWidget {
                 icon: const Icon(Icons.close_rounded),
               ),
         filled: true,
-        fillColor: _panel,
+        fillColor: Theme.of(context).colorScheme.surface,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: Color(0xFF28496D)),
+          borderSide: BorderSide(color: Theme.of(context).colorScheme.outline),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: Color(0xFF28496D)),
+          borderSide: BorderSide(color: Theme.of(context).colorScheme.outline),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(18),
@@ -981,6 +1004,7 @@ class _StopSelector extends StatelessWidget {
       isExpanded: true,
       menuMaxHeight: 420,
       decoration: _selectorDecoration(
+        context,
         label: 'Arrêt',
         icon: Icons.location_on_outlined,
       ),
@@ -1021,6 +1045,7 @@ class _DirectionSelector extends StatelessWidget {
       isExpanded: true,
       menuMaxHeight: 320,
       decoration: _selectorDecoration(
+        context,
         label: 'Direction',
         icon: Icons.alt_route_rounded,
       ),
@@ -1050,16 +1075,20 @@ class _SelectorPlaceholder extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       alignment: Alignment.centerLeft,
       decoration: BoxDecoration(
-        color: _panel,
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFF28496D)),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
       ),
-      child: Text(label, style: const TextStyle(color: _muted)),
+      child: Text(
+        label,
+        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+      ),
     );
   }
 }
 
-InputDecoration _selectorDecoration({
+InputDecoration _selectorDecoration(
+  BuildContext context, {
   required String label,
   required IconData icon,
 }) {
@@ -1067,11 +1096,11 @@ InputDecoration _selectorDecoration({
     labelText: label,
     prefixIcon: Icon(icon, color: _cyan),
     filled: true,
-    fillColor: _panel,
+    fillColor: Theme.of(context).colorScheme.surface,
     border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)),
     enabledBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(18),
-      borderSide: const BorderSide(color: Color(0xFF28496D)),
+      borderSide: BorderSide(color: Theme.of(context).colorScheme.outline),
     ),
     focusedBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(18),
@@ -1101,9 +1130,9 @@ class _NextDepartureCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: _panel,
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFF1C4265)),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
       ),
       child: Stack(
         children: [
@@ -1189,14 +1218,20 @@ class _NextDepartureCard extends StatelessWidget {
               const SizedBox(height: 12),
               Row(
                 children: [
-                  const Icon(Icons.location_on_rounded, color: Colors.white),
+                  Icon(
+                    Icons.location_on_rounded,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                        nearby
                            ? '${departure.stopName} — à ${departure.walkingMinutes} min à pied'
                            : '${departure.stopName} — arrêt sélectionné',
-                      style: const TextStyle(color: _muted, fontSize: 15),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 15,
+                      ),
                     ),
                   ),
                 ],
@@ -1206,9 +1241,45 @@ class _NextDepartureCard extends StatelessWidget {
                 snapshot.isDemo
                     ? 'Aperçu avec données de démonstration'
                     : 'Mis à jour il y a moins d’une minute · ${departure.confidence}',
-                style: const TextStyle(color: _muted, fontSize: 12),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FollowingDepartureCard extends StatelessWidget {
+  const _FollowingDepartureCard({required this.departure});
+
+  final Departure departure;
+
+  @override
+  Widget build(BuildContext context) {
+    final minutes = departure.minutesFrom(DateTime.now());
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.schedule_rounded, color: _cyan, size: 22),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Text(
+              'Le suivant est à $minutes min · vers ${departure.destination}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+            ),
           ),
         ],
       ),
@@ -1224,7 +1295,7 @@ class _AlertCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: _panelLight,
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
         onTap: onTap,
@@ -1255,7 +1326,9 @@ class _AlertCard extends StatelessWidget {
                       alert.message,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: _muted),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),
@@ -1306,7 +1379,7 @@ class _FavoritesTab extends StatelessWidget {
                   (favorite) => Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: Material(
-                      color: _panel,
+                      color: Theme.of(context).colorScheme.surface,
                       borderRadius: BorderRadius.circular(20),
                       child: InkWell(
                         onTap: () => onOpen(favorite),
@@ -1352,7 +1425,11 @@ class _FavoritesTab extends StatelessWidget {
                                       favorite.direction.label,
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(color: _muted),
+                                      style: TextStyle(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -1452,13 +1529,17 @@ class _NearbyTab extends StatelessWidget {
                       horizontal: 16,
                       vertical: 4,
                     ),
-                    tileColor: _panel,
+                    tileColor: Theme.of(context).colorScheme.surface,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),
-                    leading: const CircleAvatar(
-                      backgroundColor: _panelLight,
-                      child: Icon(Icons.directions_transit_rounded, color: _cyan),
+                    leading: CircleAvatar(
+                      backgroundColor:
+                          Theme.of(context).colorScheme.surfaceContainerHigh,
+                      child: const Icon(
+                        Icons.directions_transit_rounded,
+                        color: _cyan,
+                      ),
                     ),
                     title: Text(
                       stop.name,
@@ -1483,20 +1564,24 @@ class _NearbyTab extends StatelessWidget {
 
 class _SettingsTab extends StatelessWidget {
   const _SettingsTab({
+    required this.darkMode,
     required this.autoRefresh,
     required this.refreshIntervalSeconds,
     required this.nearbyRadiusMeters,
     required this.favoritesCount,
+    required this.onDarkModeChanged,
     required this.onAutoRefreshChanged,
     required this.onRefreshIntervalChanged,
     required this.onNearbyRadiusChanged,
     required this.onClearFavorites,
   });
 
+  final bool darkMode;
   final bool autoRefresh;
   final int refreshIntervalSeconds;
   final int nearbyRadiusMeters;
   final int favoritesCount;
+  final ValueChanged<bool> onDarkModeChanged;
   final ValueChanged<bool> onAutoRefreshChanged;
   final ValueChanged<int> onRefreshIntervalChanged;
   final ValueChanged<int> onNearbyRadiusChanged;
@@ -1518,9 +1603,24 @@ class _SettingsTab extends StatelessWidget {
               ),
               const SizedBox(height: 22),
               SwitchListTile(
+                value: darkMode,
+                onChanged: onDarkModeChanged,
+                tileColor: Theme.of(context).colorScheme.surface,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                secondary: Icon(
+                  darkMode ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                  color: _cyan,
+                ),
+                title: Text(darkMode ? 'Mode sombre' : 'Mode jour'),
+                subtitle: const Text('Changer l’apparence de l’application'),
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
                 value: autoRefresh,
                 onChanged: onAutoRefreshChanged,
-                tileColor: _panel,
+                tileColor: Theme.of(context).colorScheme.surface,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(18),
                 ),
@@ -1531,6 +1631,7 @@ class _SettingsTab extends StatelessWidget {
               DropdownButtonFormField<int>(
                 initialValue: refreshIntervalSeconds,
                 decoration: _selectorDecoration(
+                  context,
                   label: 'Fréquence d’actualisation',
                   icon: Icons.refresh_rounded,
                 ),
@@ -1550,6 +1651,7 @@ class _SettingsTab extends StatelessWidget {
               DropdownButtonFormField<int>(
                 initialValue: nearbyRadiusMeters,
                 decoration: _selectorDecoration(
+                  context,
                   label: 'Rayon autour de moi',
                   icon: Icons.radar_rounded,
                 ),
@@ -1567,7 +1669,7 @@ class _SettingsTab extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               ListTile(
-                tileColor: _panel,
+                tileColor: Theme.of(context).colorScheme.surface,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(18),
                 ),
@@ -1578,26 +1680,43 @@ class _SettingsTab extends StatelessWidget {
                 onTap: favoritesCount > 0 ? onClearFavorites : null,
               ),
               const SizedBox(height: 12),
-              const ListTile(
-                tileColor: _panel,
+              ListTile(
+                tileColor: Theme.of(context).colorScheme.surface,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(18)),
+                  borderRadius: BorderRadius.circular(18),
                 ),
-                leading: Icon(Icons.shield_outlined, color: _cyan),
-                title: Text('Confidentialité'),
-                subtitle: Text(
+                leading: const Icon(
+                  Icons.notifications_active_outlined,
+                  color: _cyan,
+                ),
+                title: const Text('Notifications push'),
+                subtitle: const Text(
+                  'Configuration Firebase requise avant activation sur Android et iPhone.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                tileColor: Theme.of(context).colorScheme.surface,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                leading: const Icon(Icons.shield_outlined, color: _cyan),
+                title: const Text('Confidentialité'),
+                subtitle: const Text(
                   'La position est utilisée uniquement à la demande et les favoris restent sur l’appareil.',
                 ),
               ),
               const SizedBox(height: 12),
-              const ListTile(
-                tileColor: _panel,
+              ListTile(
+                tileColor: Theme.of(context).colorScheme.surface,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(18)),
+                  borderRadius: BorderRadius.circular(18),
                 ),
-                leading: Icon(Icons.info_outline_rounded, color: _cyan),
-                title: Text('VoieGo 1.0.0'),
-                subtitle: Text('Données : Île-de-France Mobilités / PRIM'),
+                leading: const Icon(Icons.info_outline_rounded, color: _cyan),
+                title: const Text('VoieGo 1.1.0'),
+                subtitle: const Text(
+                  'Données : Île-de-France Mobilités / PRIM',
+                ),
               ),
             ],
           ),
@@ -1634,7 +1753,12 @@ class _TabHeader extends StatelessWidget {
             children: [
               Text(title, style: Theme.of(context).textTheme.headlineLarge),
               const SizedBox(height: 4),
-              Text(subtitle, style: const TextStyle(color: _muted)),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
             ],
           ),
         ),
@@ -1653,7 +1777,7 @@ class _EmptyTabCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: _panel,
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Column(
@@ -1688,7 +1812,7 @@ class _ErrorCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: _panel,
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(24),
       ),
       child: Column(
@@ -1715,7 +1839,7 @@ class _NoDepartureCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: _panel,
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(24),
       ),
       child: Column(

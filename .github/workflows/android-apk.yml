@@ -1,4 +1,4 @@
-name: IPA iOS non signé
+name: APK Android
 
 on:
   workflow_dispatch:
@@ -7,8 +7,8 @@ on:
       - 'v*'
 
 jobs:
-  build-unsigned-ipa:
-    runs-on: macos-15
+  build-apk:
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Récupérer le projet
@@ -29,25 +29,16 @@ jobs:
       - name: Lancer les tests
         run: flutter test
 
-      - name: Compiler l’app iOS sans signature
+      - name: Compiler l’APK Android de test
         run: >-
-          flutter build ios --release --no-codesign
+          flutter build apk --release
           --build-number=${{ github.run_number }}
           --dart-define=VOIEGO_API_BASE_URL=${{ vars.VOIEGO_API_BASE_URL }}
 
-      - name: Créer l’archive IPA non signée
-        run: |
-          rm -rf build/ios/unsigned
-          mkdir -p build/ios/unsigned/Payload
-          cp -R build/ios/iphoneos/Runner.app build/ios/unsigned/Payload/
-          cd build/ios/unsigned
-          ditto -c -k --sequesterRsrc --keepParent Payload VoieGo-unsigned.ipa
-          unzip -Z1 VoieGo-unsigned.ipa | grep -qx 'Payload/Runner.app/'
-
-      - name: Publier l’IPA comme artefact
+      - name: Publier l’APK comme artefact
         uses: actions/upload-artifact@v4
         with:
-          name: VoieGo-unsigned-${{ github.ref_name }}
-          path: build/ios/unsigned/VoieGo-unsigned.ipa
+          name: VoieGo-Android-${{ github.ref_name }}
+          path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 30
