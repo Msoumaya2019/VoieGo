@@ -1,0 +1,218 @@
+import 'dart:ui';
+
+enum TransitMode { bus, metro, rer, transilien }
+
+extension TransitModeLabel on TransitMode {
+  String get label => switch (this) {
+    TransitMode.bus => 'Bus',
+    TransitMode.metro => 'Métro',
+    TransitMode.rer => 'RER',
+    TransitMode.transilien => 'Transilien',
+  };
+
+  String get iconLabel => switch (this) {
+    TransitMode.bus => 'BUS',
+    TransitMode.metro => 'M',
+    TransitMode.rer => 'R',
+    TransitMode.transilien => 'TR',
+  };
+}
+
+class TransitLine {
+  const TransitLine({
+    required this.code,
+    required this.mode,
+    required this.lineRef,
+    required this.color,
+    required this.textColor,
+  });
+
+  final String code;
+  final TransitMode mode;
+  final String lineRef;
+  final Color color;
+  final Color textColor;
+
+  factory TransitLine.fromJson(Map<String, dynamic> json, TransitMode mode) {
+    return TransitLine(
+      code: json['code'] as String? ?? '?',
+      mode: mode,
+      lineRef: json['lineRef'] as String? ?? '',
+      color: _hexColor(json['color'] as String?, const Color(0xFF2A6FBB)),
+      textColor: _hexColor(
+        json['textColor'] as String?,
+        const Color(0xFFFFFFFF),
+      ),
+    );
+  }
+}
+
+Color _hexColor(String? value, Color fallback) {
+  final normalized = value?.replaceFirst('#', '');
+  if (normalized == null || normalized.length != 6) return fallback;
+  final parsed = int.tryParse(normalized, radix: 16);
+  return parsed == null ? fallback : Color(0xFF000000 | parsed);
+}
+
+class Departure {
+  const Departure({
+    required this.destination,
+    required this.stopName,
+    required this.expectedAt,
+    required this.walkingMinutes,
+    required this.confidence,
+    this.vehicleJourneyName,
+  });
+
+  factory Departure.fromJson(Map<String, dynamic> json) {
+    return Departure(
+      destination: json['destination'] as String? ?? 'Destination inconnue',
+      stopName: json['stopName'] as String? ?? 'Arrêt à proximité',
+      expectedAt: DateTime.parse(json['expectedAt'] as String).toLocal(),
+      walkingMinutes: (json['walkingMinutes'] as num?)?.toInt() ?? 0,
+      confidence: json['confidence'] as String? ?? 'temps réel',
+      vehicleJourneyName: json['vehicleJourneyName'] as String?,
+    );
+  }
+
+  final String destination;
+  final String stopName;
+  final DateTime expectedAt;
+  final int walkingMinutes;
+  final String confidence;
+  final String? vehicleJourneyName;
+
+  int minutesFrom(DateTime now) {
+    final value = expectedAt.difference(now).inMinutes;
+    return value < 0 ? 0 : value;
+  }
+}
+
+class TrafficAlert {
+  const TrafficAlert({required this.title, required this.message});
+
+  factory TrafficAlert.fromJson(Map<String, dynamic> json) {
+    return TrafficAlert(
+      title: json['title'] as String? ?? 'Information trafic',
+      message: json['message'] as String? ?? '',
+    );
+  }
+
+  final String title;
+  final String message;
+}
+
+class TransitSnapshot {
+  const TransitSnapshot({
+    required this.departures,
+    required this.alert,
+    required this.fetchedAt,
+    required this.isDemo,
+  });
+
+  final List<Departure> departures;
+  final TrafficAlert? alert;
+  final DateTime fetchedAt;
+  final bool isDemo;
+}
+
+const transitLines = <TransitLine>[
+  TransitLine(
+    code: 'H',
+    mode: TransitMode.transilien,
+    lineRef: 'STIF:Line::C01736:',
+    color: Color(0xFF765640),
+    textColor: Color(0xFFFFFFFF),
+  ),
+  TransitLine(
+    code: 'J',
+    mode: TransitMode.transilien,
+    lineRef: 'STIF:Line::C01739:',
+    color: Color(0xFFFFCE2E),
+    textColor: Color(0xFF101828),
+  ),
+  TransitLine(
+    code: 'K',
+    mode: TransitMode.transilien,
+    lineRef: 'STIF:Line::C01738:',
+    color: Color(0xFF8A8F2A),
+    textColor: Color(0xFFFFFFFF),
+  ),
+  TransitLine(
+    code: 'L',
+    mode: TransitMode.transilien,
+    lineRef: 'STIF:Line::C01740:',
+    color: Color(0xFFB7AEFF),
+    textColor: Color(0xFF07182F),
+  ),
+  TransitLine(
+    code: 'N',
+    mode: TransitMode.transilien,
+    lineRef: 'STIF:Line::C01741:',
+    color: Color(0xFF00A9A9),
+    textColor: Color(0xFFFFFFFF),
+  ),
+  TransitLine(
+    code: 'P',
+    mode: TransitMode.transilien,
+    lineRef: 'STIF:Line::C01742:',
+    color: Color(0xFFFF9E2C),
+    textColor: Color(0xFF101828),
+  ),
+  TransitLine(
+    code: 'R',
+    mode: TransitMode.transilien,
+    lineRef: 'STIF:Line::C01743:',
+    color: Color(0xFFE978B4),
+    textColor: Color(0xFF101828),
+  ),
+  TransitLine(
+    code: 'U',
+    mode: TransitMode.transilien,
+    lineRef: 'STIF:Line::C01744:',
+    color: Color(0xFFD50045),
+    textColor: Color(0xFFFFFFFF),
+  ),
+  TransitLine(
+    code: 'A',
+    mode: TransitMode.rer,
+    lineRef: 'STIF:Line::C01742:',
+    color: Color(0xFFE2231A),
+    textColor: Color(0xFFFFFFFF),
+  ),
+  TransitLine(
+    code: 'B',
+    mode: TransitMode.rer,
+    lineRef: 'STIF:Line::C01743:',
+    color: Color(0xFF4B92DB),
+    textColor: Color(0xFFFFFFFF),
+  ),
+  TransitLine(
+    code: '1',
+    mode: TransitMode.metro,
+    lineRef: 'STIF:Line::C01371:',
+    color: Color(0xFFFFCE00),
+    textColor: Color(0xFF101828),
+  ),
+  TransitLine(
+    code: '4',
+    mode: TransitMode.metro,
+    lineRef: 'STIF:Line::C01374:',
+    color: Color(0xFFBE418D),
+    textColor: Color(0xFFFFFFFF),
+  ),
+  TransitLine(
+    code: '42',
+    mode: TransitMode.bus,
+    lineRef: 'STIF:Line::C01234:',
+    color: Color(0xFF2A6FBB),
+    textColor: Color(0xFFFFFFFF),
+  ),
+  TransitLine(
+    code: '73',
+    mode: TransitMode.bus,
+    lineRef: 'STIF:Line::C01235:',
+    color: Color(0xFF35A852),
+    textColor: Color(0xFFFFFFFF),
+  ),
+];

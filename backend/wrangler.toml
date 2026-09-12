@@ -1,0 +1,11 @@
+name = "voiego-prim-proxy"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+ALLOWED_ORIGIN = "*"
+PRIM_NAVITIA_BASE = "https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia"
+PRIM_TRAFFIC_BASE = "https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia/line_reports"
+
+# Ajoutez le secret sans jamais le committer :
+# npx wrangler secret put PRIM_API_KEY
