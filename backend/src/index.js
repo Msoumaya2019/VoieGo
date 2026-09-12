@@ -85,8 +85,8 @@ async function linesResponse(url, request, env, context, cors) {
   const commercialModes = {
     bus: 'Bus',
     metro: 'Metro',
-    rer: 'RER',
-    transilien: 'Transilien',
+    rer: 'RapidTransit',
+    transilien: 'LocalTrain',
   };
   const mode = url.searchParams.get('mode');
   const commercialMode = commercialModes[mode];
@@ -141,8 +141,9 @@ async function nearestStop(base, apiKey, lineId, location) {
 async function trafficAlert(env, lineId) {
   try {
     const base = env.PRIM_TRAFFIC_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia/line_reports';
+    const filter = encodeURIComponent(`line.id=${lineId}`);
     const payload = await primFetch(
-      `${base}/lines/${encodeURIComponent(lineId)}/line_reports?count=20`,
+      `${base}?count=20&filter=${filter}`,
       env.PRIM_API_KEY,
     );
     const disruption = (payload.disruptions || []).find((item) => item.status !== 'past');
