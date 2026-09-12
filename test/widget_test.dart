@@ -19,6 +19,6 @@ void main() {
     expect(find.text('Choisir le réseau'), findsOneWidget);
     expect(find.text('Choisir la ligne'), findsOneWidget);
     expect(find.text('3 min'), findsOneWidget);
-    expect(find.text('Suivre le prochain passage'), findsOneWidget);
+    expect(find.text('Ajouter aux favoris'), findsOneWidget);
   });
 }
