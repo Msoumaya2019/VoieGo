@@ -2,18 +2,15 @@ import 'package:flutter/material.dart';
 
 import 'data/transit_repository.dart';
 import 'screens/home_screen.dart';
-import 'services/location_service.dart';
 
 class VoieGoApp extends StatelessWidget {
   const VoieGoApp({
     super.key,
     required this.repository,
-    required this.locationService,
     required this.demoMode,
   });
 
   final TransitRepository repository;
-  final LocationService locationService;
   final bool demoMode;
 
   @override
@@ -63,7 +60,6 @@ class VoieGoApp extends StatelessWidget {
       ),
       home: HomeScreen(
         repository: repository,
-        locationService: locationService,
         demoMode: demoMode,
       ),
     );

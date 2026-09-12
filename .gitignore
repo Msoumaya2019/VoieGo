@@ -39,6 +39,8 @@ backend/.wrangler/
 backend/.dev.vars
 backend/.env*
 !backend/.env.example
+/.wrangler/
+/build-artifacts/
 
 # Symbolication related
 app.*.symbols

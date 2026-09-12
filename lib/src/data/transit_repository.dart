@@ -47,8 +47,8 @@ class TransitRepository {
 
   Future<TransitSnapshot> fetchSnapshot({
     required TransitLine line,
-    double? latitude,
-    double? longitude,
+    required TransitStop stop,
+    required TransitDirection direction,
   }) async {
     if (config.demoMode) return _demoSnapshot(line);
 
@@ -59,8 +59,8 @@ class TransitRepository {
           queryParameters: {
             'lineRef': line.lineRef,
             'mode': line.mode.name,
-            if (latitude != null) 'lat': '$latitude',
-            if (longitude != null) 'lon': '$longitude',
+            'stopId': stop.id,
+            'routeId': direction.id,
           },
         );
 
@@ -69,18 +69,16 @@ class TransitRepository {
           .get(uri)
           .timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) {
-        throw TransitException('Le service répond ${response.statusCode}.');
+        final message = _apiErrorMessage(response.body);
+        throw TransitException(
+          message ?? 'Le service répond ${response.statusCode}.',
+        );
       }
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       final departures = (body['departures'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(Departure.fromJson)
           .toList();
-      if (departures.isEmpty) {
-        throw const TransitException(
-          'Aucun passage disponible pour cette ligne.',
-        );
-      }
       return TransitSnapshot(
         departures: departures,
         alert: body['alert'] is Map<String, dynamic>
@@ -88,6 +86,7 @@ class TransitRepository {
             : null,
         fetchedAt: DateTime.now(),
         isDemo: body['source'] == 'demo',
+        locationMatched: body['locationMatched'] as bool? ?? false,
       );
     } on TransitException {
       rethrow;
@@ -95,6 +94,71 @@ class TransitRepository {
       throw const TransitException(
         'Impossible de joindre VoieGo. Vérifiez votre connexion puis réessayez.',
       );
+    }
+  }
+
+  Future<List<TransitStop>> fetchStops(TransitLine line) async {
+    if (config.demoMode) {
+      return const [TransitStop(id: 'demo:stop', name: 'Arrêt principal')];
+    }
+    final uri = Uri.parse(config.apiBaseUrl)
+        .resolve('/api/v1/stops')
+        .replace(queryParameters: {'lineRef': line.lineRef});
+    final response = await _get(uri, 'Impossible de charger les arrêts.');
+    final stops = (response['stops'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(TransitStop.fromJson)
+        .where((stop) => stop.id.isNotEmpty)
+        .toList();
+    if (stops.isEmpty) {
+      throw const TransitException('Aucun arrêt disponible pour cette ligne.');
+    }
+    return stops;
+  }
+
+  Future<List<TransitDirection>> fetchDirections(
+    TransitLine line,
+    TransitStop stop,
+  ) async {
+    if (config.demoMode) {
+      return const [
+        TransitDirection(id: 'demo:route', label: 'Direction terminus'),
+      ];
+    }
+    final uri = Uri.parse(config.apiBaseUrl)
+        .resolve('/api/v1/directions')
+        .replace(queryParameters: {
+          'lineRef': line.lineRef,
+          'stopId': stop.id,
+        });
+    final response = await _get(uri, 'Impossible de charger les directions.');
+    final directions = (response['directions'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(TransitDirection.fromJson)
+        .where((direction) => direction.id.isNotEmpty)
+        .toList();
+    if (directions.isEmpty) {
+      throw const TransitException('Aucune direction disponible à cet arrêt.');
+    }
+    return directions;
+  }
+
+  Future<Map<String, dynamic>> _get(Uri uri, String fallbackMessage) async {
+    try {
+      final response = await _client
+          .get(uri)
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) {
+        throw TransitException(
+          _apiErrorMessage(response.body) ??
+              '$fallbackMessage (${response.statusCode})',
+        );
+      }
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    } on TransitException {
+      rethrow;
+    } catch (_) {
+      throw TransitException(fallbackMessage);
     }
   }
 
@@ -130,8 +194,22 @@ class TransitRepository {
           : null,
       fetchedAt: now,
       isDemo: true,
+      locationMatched: true,
     );
   }
+}
+
+String? _apiErrorMessage(String responseBody) {
+  try {
+    final body = jsonDecode(responseBody);
+    if (body is Map<String, dynamic>) {
+      final message = body['error'];
+      if (message is String && message.trim().isNotEmpty) return message;
+    }
+  } catch (_) {
+    // Une réponse non JSON utilise le message HTTP générique.
+  }
+  return null;
 }
 
 class TransitException implements Exception {

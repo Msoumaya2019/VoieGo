@@ -1,4 +1,3 @@
-const DEFAULT_LOCATION = { lat: 48.8919, lon: 2.2383 };
 const CACHE_SECONDS = 45;
 
 export default {
@@ -15,7 +14,13 @@ export default {
     if (url.pathname === '/health') {
       return json({ ok: true, service: 'voiego-prim-proxy' }, 200, cors);
     }
-    if (url.pathname !== '/api/v1/snapshot' && url.pathname !== '/api/v1/lines') {
+    const supportedRoutes = new Set([
+      '/api/v1/lines',
+      '/api/v1/stops',
+      '/api/v1/directions',
+      '/api/v1/snapshot',
+    ]);
+    if (!supportedRoutes.has(url.pathname)) {
       return json({ error: 'Route inconnue.' }, 404, cors);
     }
     if (!env.PRIM_API_KEY) {
@@ -35,30 +40,70 @@ export default {
     if (!/^STIF:Line::C\d+:$/.test(lineRef ?? '')) {
       return json({ error: 'lineRef invalide.' }, 400, cors);
     }
-    const location = {
-      lat: numberOr(url.searchParams.get('lat'), DEFAULT_LOCATION.lat),
-      lon: numberOr(url.searchParams.get('lon'), DEFAULT_LOCATION.lon),
-    };
-    if (!validLocation(location)) {
+    const lineId = toNavitiaLineId(lineRef);
+    if (url.pathname === '/api/v1/stops') {
+      try {
+        return await stopsResponse(url, request, env, context, cors, lineId);
+      } catch (error) {
+        return proxyErrorResponse(error, cors);
+      }
+    }
+    if (url.pathname === '/api/v1/directions') {
+      try {
+        return await directionsResponse(url, request, env, context, cors, lineId);
+      } catch (error) {
+        return proxyErrorResponse(error, cors);
+      }
+    }
+
+    const selectedStopId = url.searchParams.get('stopId');
+    const selectedRouteId = url.searchParams.get('routeId');
+    if (selectedStopId && !validStopId(selectedStopId)) {
+      return json({ error: 'stopId invalide.' }, 400, cors);
+    }
+    if (selectedRouteId && !validRouteId(selectedRouteId)) {
+      return json({ error: 'routeId invalide.' }, 400, cors);
+    }
+    const hasUserLocation = url.searchParams.has('lat') && url.searchParams.has('lon');
+    const location = hasUserLocation
+      ? {
+          lat: Number(url.searchParams.get('lat')),
+          lon: Number(url.searchParams.get('lon')),
+        }
+      : null;
+    if (location && !validLocation(location)) {
       return json({ error: 'Coordonnées invalides.' }, 400, cors);
     }
 
     const cacheKey = new Request(
-      `${url.origin}/cache/snapshot?lineRef=${encodeURIComponent(lineRef)}&lat=${location.lat.toFixed(3)}&lon=${location.lon.toFixed(3)}`,
+      `${url.origin}/cache/snapshot?lineRef=${encodeURIComponent(lineRef)}&stopId=${encodeURIComponent(selectedStopId || '')}&routeId=${encodeURIComponent(selectedRouteId || '')}`,
     );
     const cache = caches.default;
     const cached = await cache.match(cacheKey);
     if (cached) return withCors(cached, cors);
 
     try {
-      const lineId = toNavitiaLineId(lineRef);
       const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
-      const stop = await nearestStop(base, env.PRIM_API_KEY, lineId, location);
-      const departurePayload = await primFetch(
-        `${base}/stop_areas/${encodeURIComponent(stop.id)}/departures?data_freshness=realtime&count=10&filter=${encodeURIComponent(`line.id=${lineId}`)}`,
+      const stop = selectedStopId
+        ? { id: selectedStopId, name: 'Arrêt sélectionné', distance: 0, isNearby: false }
+        : location
+        ? await nearestStop(base, env.PRIM_API_KEY, lineId, location)
+        : await referenceStop(base, env.PRIM_API_KEY, lineId);
+      const departureFilter = selectedRouteId
+        ? `route.id=${selectedRouteId}`
+        : `line.id=${lineId}`;
+      let departurePayload = await primFetch(
+        `${base}/stop_areas/${encodeURIComponent(stop.id)}/departures?data_freshness=realtime&count=20&filter=${encodeURIComponent(departureFilter)}`,
         env.PRIM_API_KEY,
       );
-      const departures = normalizeDepartures(departurePayload, stop);
+      let departures = normalizeDepartures(departurePayload, stop);
+      if (departures.length === 0) {
+        departurePayload = await primFetch(
+          `${base}/stop_areas/${encodeURIComponent(stop.id)}/departures?count=20&filter=${encodeURIComponent(departureFilter)}`,
+          env.PRIM_API_KEY,
+        );
+        departures = normalizeDepartures(departurePayload, stop);
+      }
       const alert = await trafficAlert(env, lineId);
       const response = json(
         {
@@ -66,6 +111,7 @@ export default {
           stop: { id: stop.id, name: stop.name, distanceMeters: stop.distance },
           departures,
           alert,
+          locationMatched: hasUserLocation && stop.isNearby,
           generatedAt: new Date().toISOString(),
           attribution: 'Île-de-France Mobilités / PRIM',
         },
@@ -76,7 +122,8 @@ export default {
       return response;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erreur PRIM inconnue.';
-      return json({ error: message }, 502, cors);
+      const status = error instanceof ProxyError ? error.status : 502;
+      return json({ error: message }, status, cors);
     }
   },
 };
@@ -92,15 +139,14 @@ async function linesResponse(url, request, env, context, cors) {
   const commercialMode = commercialModes[mode];
   if (!commercialMode) return json({ error: 'Mode invalide.' }, 400, cors);
 
-  const cacheKey = new Request(`${url.origin}/cache/lines?mode=${mode}`);
+  const cacheKey = new Request(`${url.origin}/cache/v2/lines?mode=${mode}`);
   const cache = caches.default;
   const cached = await cache.match(cacheKey);
   if (cached) return withCors(cached, cors);
 
   const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
   const filter = `commercial_mode.id=commercial_mode:${commercialMode}`;
-  const payload = await primFetch(`${base}/lines?count=100&filter=${encodeURIComponent(filter)}`, env.PRIM_API_KEY);
-  const values = Array.isArray(payload.lines) ? payload.lines : [];
+  const values = await fetchAllLines(base, env.PRIM_API_KEY, filter);
   const lines = values
     .filter((line) => /^line:IDFM:C\d+$/.test(line.id || ''))
     .map((line) => ({
@@ -119,6 +165,83 @@ async function linesResponse(url, request, env, context, cors) {
   return response;
 }
 
+async function stopsResponse(url, request, env, context, cors, lineId) {
+  const cacheKey = new Request(`${url.origin}/cache/stops?lineId=${encodeURIComponent(lineId)}`);
+  const cache = caches.default;
+  const cached = await cache.match(cacheKey);
+  if (cached) return withCors(cached, cors);
+
+  const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
+  const payload = await primFetch(
+    `${base}/lines/${encodeURIComponent(lineId)}/stop_areas?count=1000`,
+    env.PRIM_API_KEY,
+  );
+  const stops = (Array.isArray(payload.stop_areas) ? payload.stop_areas : [])
+    .filter((stop) => validStopId(stop.id))
+    .map((stop) => ({ id: stop.id, name: stop.name || 'Arrêt sans nom' }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'fr', { numeric: true }));
+  const response = json(
+    { source: 'prim-navitia', stops },
+    200,
+    { ...cors, 'Cache-Control': 'public, max-age=86400' },
+  );
+  context.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
+}
+
+async function directionsResponse(url, request, env, context, cors, lineId) {
+  const stopId = url.searchParams.get('stopId');
+  if (!validStopId(stopId)) return json({ error: 'stopId invalide.' }, 400, cors);
+  const cacheKey = new Request(
+    `${url.origin}/cache/directions?lineId=${encodeURIComponent(lineId)}&stopId=${encodeURIComponent(stopId)}`,
+  );
+  const cache = caches.default;
+  const cached = await cache.match(cacheKey);
+  if (cached) return withCors(cached, cors);
+
+  const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
+  const filter = encodeURIComponent(`line.id=${lineId}`);
+  const payload = await primFetch(
+    `${base}/stop_areas/${encodeURIComponent(stopId)}/routes?count=100&filter=${filter}`,
+    env.PRIM_API_KEY,
+  );
+  const seen = new Set();
+  const directions = (Array.isArray(payload.routes) ? payload.routes : [])
+    .filter((route) => validRouteId(route.id))
+    .map((route) => ({
+      id: route.id,
+      label: route.direction?.name || route.name || route.code || 'Direction inconnue',
+    }))
+    .filter((direction) => {
+      if (seen.has(direction.id)) return false;
+      seen.add(direction.id);
+      return true;
+    });
+  const response = json(
+    { source: 'prim-navitia', directions },
+    200,
+    { ...cors, 'Cache-Control': 'public, max-age=86400' },
+  );
+  context.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
+}
+
+async function fetchAllLines(base, apiKey, filter) {
+  const pageSize = 1000;
+  const values = [];
+  for (let page = 0; page < 10; page += 1) {
+    const payload = await primFetch(
+      `${base}/lines?count=${pageSize}&start_page=${page}&filter=${encodeURIComponent(filter)}`,
+      apiKey,
+    );
+    const pageValues = Array.isArray(payload.lines) ? payload.lines : [];
+    values.push(...pageValues);
+    const total = Number(payload.pagination?.total_result ?? values.length);
+    if (values.length >= total || pageValues.length < pageSize) break;
+  }
+  return values;
+}
+
 async function nearestStop(base, apiKey, lineId, location) {
   const coord = `${location.lon};${location.lat}`;
   const params = new URLSearchParams({
@@ -130,11 +253,37 @@ async function nearestStop(base, apiKey, lineId, location) {
   const payload = await primFetch(`${base}/coords/${coord}/places_nearby?${params}`, apiKey);
   const places = Array.isArray(payload.places_nearby) ? payload.places_nearby : [];
   const place = places.find((item) => item.stop_area?.id);
-  if (!place) throw new Error('Aucun arrêt de cette ligne trouvé à moins de 3 km.');
+  if (place) {
+    return {
+      id: place.stop_area.id,
+      name: place.stop_area.name || 'Arrêt à proximité',
+      distance: Number(place.distance || 0),
+      isNearby: true,
+    };
+  }
+
+  return referenceStop(base, apiKey, lineId);
+}
+
+async function referenceStop(base, apiKey, lineId) {
+  const fallbackPayload = await primFetch(
+    `${base}/lines/${encodeURIComponent(lineId)}/stop_areas?count=1`,
+    apiKey,
+  );
+  const fallback = Array.isArray(fallbackPayload.stop_areas)
+    ? fallbackPayload.stop_areas[0]
+    : null;
+  if (!fallback?.id) {
+    throw new ProxyError(
+      'Aucun arrêt exploitable n’est disponible actuellement pour cette ligne.',
+      404,
+    );
+  }
   return {
-    id: place.stop_area.id,
-    name: place.stop_area.name || 'Arrêt à proximité',
-    distance: Number(place.distance || 0),
+    id: fallback.id,
+    name: fallback.name || 'Arrêt de référence',
+    distance: 0,
+    isNearby: false,
   };
 }
 
@@ -166,6 +315,27 @@ async function primFetch(url, apiKey) {
     throw new Error(`PRIM a répondu ${response.status}.`);
   }
   return response.json();
+}
+
+class ProxyError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function proxyErrorResponse(error, cors) {
+  const message = error instanceof Error ? error.message : 'Erreur PRIM inconnue.';
+  const status = error instanceof ProxyError ? error.status : 502;
+  return json({ error: message }, status, cors);
+}
+
+function validStopId(value) {
+  return typeof value === 'string' && /^stop_area:IDFM:[A-Za-z0-9_-]+$/.test(value);
+}
+
+function validRouteId(value) {
+  return typeof value === 'string' && /^route:IDFM:[A-Za-z0-9:_-]+$/.test(value);
 }
 
 export function normalizeDepartures(payload, stop) {
@@ -203,11 +373,6 @@ export function toNavitiaLineId(lineRef) {
   const code = /^STIF:Line::(C\d+):$/.exec(lineRef)?.[1];
   if (!code) throw new Error('lineRef invalide.');
   return `line:IDFM:${code}`;
-}
-
-function numberOr(value, fallback) {
-  if (value == null || value === '') return fallback;
-  return Number(value);
 }
 
 function validLocation({ lat, lon }) {

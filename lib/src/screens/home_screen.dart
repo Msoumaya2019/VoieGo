@@ -5,7 +5,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/transit_repository.dart';
 import '../models/transit.dart';
-import '../services/location_service.dart';
 
 const _navy = Color(0xFF07182F);
 const _panel = Color(0xFF102844);
@@ -19,12 +18,10 @@ class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
     required this.repository,
-    required this.locationService,
     required this.demoMode,
   });
 
   final TransitRepository repository;
-  final LocationService locationService;
   final bool demoMode;
 
   @override
@@ -35,12 +32,16 @@ class _HomeScreenState extends State<HomeScreen> {
   TransitMode _mode = TransitMode.transilien;
   late TransitLine _line;
   late List<TransitLine> _availableLines;
+  List<TransitStop> _availableStops = const [];
+  List<TransitDirection> _availableDirections = const [];
+  TransitStop? _stop;
+  TransitDirection? _direction;
   TransitSnapshot? _snapshot;
-  UserLocation? _location;
   bool _loading = true;
   bool _following = false;
-  bool _reverseDirection = false;
   String? _error;
+  String _lineQuery = '';
+  final TextEditingController _lineSearchController = TextEditingController();
   Timer? _ticker;
 
   @override
@@ -51,13 +52,14 @@ class _HomeScreenState extends State<HomeScreen> {
     _bootstrap();
     _ticker = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
-      _refresh(silent: true);
+      if (_stop != null && _direction != null) _refresh(silent: true);
     });
   }
 
   @override
   void dispose() {
     _ticker?.cancel();
+    _lineSearchController.dispose();
     super.dispose();
   }
 
@@ -89,22 +91,13 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {
       // Le catalogue local garde l’interface utilisable si le proxy est indisponible.
     }
-    await _refresh();
-    unawaited(_updateLocation());
-  }
-
-  Future<void> _updateLocation() async {
-    try {
-      final value = await widget.locationService.currentLocation();
-      if (!mounted || value == null) return;
-      setState(() => _location = value);
-      await _refresh(silent: true);
-    } catch (_) {
-      // La localisation est facultative : l’app reste utilisable sans permission.
-    }
+    await _loadStopsAndDirections();
   }
 
   Future<void> _refresh({bool silent = false}) async {
+    final stop = _stop;
+    final direction = _direction;
+    if (stop == null || direction == null) return;
     if (!silent && mounted) {
       setState(() {
         _loading = true;
@@ -114,8 +107,8 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final result = await widget.repository.fetchSnapshot(
         line: _line,
-        latitude: _location?.latitude,
-        longitude: _location?.longitude,
+        stop: stop,
+        direction: direction,
       );
       if (!mounted) return;
       setState(() {
@@ -132,12 +125,84 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _loadStopsAndDirections() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+        _snapshot = null;
+        _availableStops = const [];
+        _availableDirections = const [];
+        _stop = null;
+        _direction = null;
+      });
+    }
+    try {
+      final stops = await widget.repository.fetchStops(_line);
+      final stop = stops.first;
+      final directions = await widget.repository.fetchDirections(_line, stop);
+      if (!mounted) return;
+      setState(() {
+        _availableStops = stops;
+        _stop = stop;
+        _availableDirections = directions;
+        _direction = directions.first;
+      });
+      await _refresh();
+    } on TransitException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = error.message;
+      });
+    }
+  }
+
+  Future<void> _selectStop(TransitStop stop) async {
+    if (_stop?.id == stop.id) return;
+    setState(() {
+      _stop = stop;
+      _direction = null;
+      _availableDirections = const [];
+      _snapshot = null;
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final directions = await widget.repository.fetchDirections(_line, stop);
+      if (!mounted) return;
+      setState(() {
+        _availableDirections = directions;
+        _direction = directions.first;
+      });
+      await _refresh();
+    } on TransitException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = error.message;
+      });
+    }
+  }
+
+  Future<void> _selectDirection(TransitDirection direction) async {
+    if (_direction?.id == direction.id) return;
+    setState(() {
+      _direction = direction;
+      _snapshot = null;
+      _following = false;
+    });
+    await _refresh();
+  }
+
   Future<void> _selectMode(TransitMode mode) async {
     if (_mode == mode) return;
     final localLines = transitLines.where((line) => line.mode == mode).toList();
     final nextLine = localLines.first;
+    _lineSearchController.clear();
     setState(() {
       _mode = mode;
+      _lineQuery = '';
       _line = nextLine;
       _availableLines = localLines;
       _snapshot = null;
@@ -155,7 +220,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // La liste locale est un secours volontaire.
     }
     await _saveSelection();
-    await _refresh();
+    await _loadStopsAndDirections();
   }
 
   Future<void> _selectLine(TransitLine line) async {
@@ -166,7 +231,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _following = false;
     });
     await _saveSelection();
-    await _refresh();
+    await _loadStopsAndDirections();
   }
 
   Future<void> _saveSelection() async {
@@ -178,14 +243,18 @@ class _HomeScreenState extends State<HomeScreen> {
   Departure? get _primaryDeparture {
     final departures = _snapshot?.departures;
     if (departures == null || departures.isEmpty) return null;
-    return _reverseDirection && departures.length > 1
-        ? departures[1]
-        : departures[0];
+    return departures[0];
   }
 
   @override
   Widget build(BuildContext context) {
-    final lineChoices = _availableLines;
+    final query = _lineQuery.trim().toLowerCase();
+    final matchingLines = _availableLines
+        .where((line) => line.code.toLowerCase().contains(query))
+        .toList();
+    final lineChoices = _mode == TransitMode.bus && query.isEmpty
+        ? matchingLines.take(30).toList()
+        : matchingLines.take(100).toList();
     return Scaffold(
       body: SafeArea(
         child: RefreshIndicator(
@@ -221,10 +290,41 @@ class _HomeScreenState extends State<HomeScreen> {
                             label: 'Choisir la ligne',
                           ),
                           const SizedBox(height: 12),
+                          if (_mode == TransitMode.bus) ...[
+                            _BusLineSearch(
+                              controller: _lineSearchController,
+                              totalLines: _availableLines.length,
+                              resultCount: matchingLines.length,
+                              onChanged: (value) =>
+                                  setState(() => _lineQuery = value),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
                           _LineSelector(
                             lines: lineChoices,
                             selected: _line,
                             onSelected: _selectLine,
+                          ),
+                          const SizedBox(height: 24),
+                          const _StepTitle(
+                            number: '3',
+                            label: 'Arrêt et direction',
+                          ),
+                          const SizedBox(height: 12),
+                          _StopSelector(
+                            key: ValueKey('stops-${_line.lineRef}'),
+                            stops: _availableStops,
+                            selected: _stop,
+                            onSelected: _selectStop,
+                          ),
+                          const SizedBox(height: 10),
+                          _DirectionSelector(
+                            key: ValueKey(
+                              'directions-${_line.lineRef}-${_stop?.id}',
+                            ),
+                            directions: _availableDirections,
+                            selected: _direction,
+                            onSelected: _selectDirection,
                           ),
                           const SizedBox(height: 20),
                           AnimatedSwitcher(
@@ -256,7 +356,9 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
     final departure = _primaryDeparture;
-    if (departure == null) return const SizedBox.shrink();
+    if (departure == null) {
+      return _NoDepartureCard(line: _line, onRetry: _refresh);
+    }
     return Column(
       key: ValueKey('${_mode.name}-${_line.code}'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -266,10 +368,10 @@ class _HomeScreenState extends State<HomeScreen> {
           line: _line,
           departure: departure,
           snapshot: _snapshot!,
-          located: _location != null,
+          nearby: false,
         ),
         const SizedBox(height: 14),
-        _MapCard(departure: departure, onOpen: () => _showMap(departure)),
+        _MapCard(departure: departure),
         if (_snapshot?.alert case final alert?) ...[
           const SizedBox(height: 14),
           _AlertCard(alert: alert, onTap: () => _showTraffic(alert)),
@@ -309,65 +411,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ),
-        const SizedBox(height: 12),
-        OutlinedButton.icon(
-          onPressed: () =>
-              setState(() => _reverseDirection = !_reverseDirection),
-          icon: const Icon(Icons.swap_horiz_rounded),
-          label: const Text('Changer de sens'),
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size.fromHeight(54),
-            foregroundColor: Colors.white,
-            side: const BorderSide(color: Colors.white, width: 1.5),
-            textStyle: const TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w700,
-            ),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-          ),
-        ),
       ],
-    );
-  }
-
-  void _showMap(Departure departure) {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: _panel,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'Rejoindre ${departure.stopName}',
-                style: Theme.of(context).textTheme.headlineMedium,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _location == null
-                    ? 'Activez la localisation pour une estimation personnalisée.'
-                    : '${departure.walkingMinutes} min à pied depuis votre position.',
-                style: const TextStyle(color: _muted),
-              ),
-              const SizedBox(height: 16),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: Image.asset(
-                  'assets/images/la_defense_map.png',
-                  fit: BoxFit.cover,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 
@@ -594,6 +638,15 @@ class _LineSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (lines.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12),
+        child: Text(
+          'Aucune ligne ne correspond à cette recherche.',
+          style: TextStyle(color: _muted),
+        ),
+      );
+    }
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
@@ -646,20 +699,195 @@ class _LineSelector extends StatelessWidget {
   }
 }
 
+class _BusLineSearch extends StatelessWidget {
+  const _BusLineSearch({
+    required this.controller,
+    required this.totalLines,
+    required this.resultCount,
+    required this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final int totalLines;
+  final int resultCount;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      keyboardType: TextInputType.text,
+      textInputAction: TextInputAction.search,
+      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+      decoration: InputDecoration(
+        hintText: 'Rechercher un bus, ex. 256',
+        helperText: controller.text.isEmpty
+            ? '$totalLines lignes disponibles · saisissez un numéro'
+            : '$resultCount résultat${resultCount > 1 ? 's' : ''}',
+        prefixIcon: const Icon(Icons.search_rounded, color: _cyan),
+        suffixIcon: controller.text.isEmpty
+            ? null
+            : IconButton(
+                tooltip: 'Effacer la recherche',
+                onPressed: () {
+                  controller.clear();
+                  onChanged('');
+                },
+                icon: const Icon(Icons.close_rounded),
+              ),
+        filled: true,
+        fillColor: _panel,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(18),
+          borderSide: const BorderSide(color: Color(0xFF28496D)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(18),
+          borderSide: const BorderSide(color: Color(0xFF28496D)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(18),
+          borderSide: const BorderSide(color: _cyan, width: 2),
+        ),
+      ),
+    );
+  }
+}
+
+class _StopSelector extends StatelessWidget {
+  const _StopSelector({
+    super.key,
+    required this.stops,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final List<TransitStop> stops;
+  final TransitStop? selected;
+  final ValueChanged<TransitStop> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (stops.isEmpty) return const _SelectorPlaceholder('Chargement des arrêts…');
+    return DropdownButtonFormField<TransitStop>(
+      initialValue: selected,
+      isExpanded: true,
+      menuMaxHeight: 420,
+      decoration: _selectorDecoration(
+        label: 'Arrêt',
+        icon: Icons.location_on_outlined,
+      ),
+      items: stops
+          .map(
+            (stop) => DropdownMenuItem(
+              value: stop,
+              child: Text(stop.name, overflow: TextOverflow.ellipsis),
+            ),
+          )
+          .toList(),
+      onChanged: (value) {
+        if (value != null) onSelected(value);
+      },
+    );
+  }
+}
+
+class _DirectionSelector extends StatelessWidget {
+  const _DirectionSelector({
+    super.key,
+    required this.directions,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final List<TransitDirection> directions;
+  final TransitDirection? selected;
+  final ValueChanged<TransitDirection> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (directions.isEmpty) {
+      return const _SelectorPlaceholder('Chargement des directions…');
+    }
+    return DropdownButtonFormField<TransitDirection>(
+      initialValue: selected,
+      isExpanded: true,
+      menuMaxHeight: 320,
+      decoration: _selectorDecoration(
+        label: 'Direction',
+        icon: Icons.alt_route_rounded,
+      ),
+      items: directions
+          .map(
+            (direction) => DropdownMenuItem(
+              value: direction,
+              child: Text(direction.label, overflow: TextOverflow.ellipsis),
+            ),
+          )
+          .toList(),
+      onChanged: (value) {
+        if (value != null) onSelected(value);
+      },
+    );
+  }
+}
+
+class _SelectorPlaceholder extends StatelessWidget {
+  const _SelectorPlaceholder(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 58,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      alignment: Alignment.centerLeft,
+      decoration: BoxDecoration(
+        color: _panel,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFF28496D)),
+      ),
+      child: Text(label, style: const TextStyle(color: _muted)),
+    );
+  }
+}
+
+InputDecoration _selectorDecoration({
+  required String label,
+  required IconData icon,
+}) {
+  return InputDecoration(
+    labelText: label,
+    prefixIcon: Icon(icon, color: _cyan),
+    filled: true,
+    fillColor: _panel,
+    border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(18),
+      borderSide: const BorderSide(color: Color(0xFF28496D)),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(18),
+      borderSide: const BorderSide(color: _cyan, width: 2),
+    ),
+  );
+}
+
 class _NextDepartureCard extends StatelessWidget {
   const _NextDepartureCard({
     required this.mode,
     required this.line,
     required this.departure,
     required this.snapshot,
-    required this.located,
+    required this.nearby,
   });
 
   final TransitMode mode;
   final TransitLine line;
   final Departure departure;
   final TransitSnapshot snapshot;
-  final bool located;
+  final bool nearby;
 
   @override
   Widget build(BuildContext context) {
@@ -759,9 +987,9 @@ class _NextDepartureCard extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      located
-                          ? '${departure.stopName} — à ${departure.walkingMinutes} min à pied'
-                          : '${departure.stopName} — activez votre position',
+                       nearby
+                           ? '${departure.stopName} — à ${departure.walkingMinutes} min à pied'
+                           : '${departure.stopName} — arrêt sélectionné',
                       style: const TextStyle(color: _muted, fontSize: 15),
                     ),
                   ),
@@ -836,64 +1064,35 @@ class _RouteTimeline extends StatelessWidget {
 }
 
 class _MapCard extends StatelessWidget {
-  const _MapCard({required this.departure, required this.onOpen});
+  const _MapCard({required this.departure});
   final Departure departure;
-  final VoidCallback onOpen;
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: Stack(
-        alignment: Alignment.bottomRight,
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: _panelLight,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
         children: [
-          SizedBox(
-            width: double.infinity,
-            height: 190,
-            child: Image.asset(
-              'assets/images/la_defense_map.png',
-              fit: BoxFit.cover,
-            ),
-          ),
-          Positioned(
-            top: 14,
-            left: 14,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.directions_walk_rounded, color: _navy),
-                  const SizedBox(width: 7),
-                  Text(
-                    '${departure.walkingMinutes} min\nà pied',
-                    style: const TextStyle(
-                      color: _navy,
-                      fontWeight: FontWeight.w900,
-                      height: 1.05,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: FilledButton.icon(
-              onPressed: onOpen,
-              icon: const Icon(Icons.navigation_rounded),
-              label: const Text('Voir sur la carte'),
-              style: FilledButton.styleFrom(
-                backgroundColor: _navy,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 14,
+          const Icon(Icons.route_rounded, color: _cyan, size: 34),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  departure.stopName,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
                 ),
-              ),
+                const SizedBox(height: 3),
+                const Text(
+                  'Arrêt de référence de la ligne · aucune localisation requise',
+                  style: TextStyle(color: _muted),
+                ),
+              ],
             ),
           ),
         ],
@@ -986,6 +1185,40 @@ class _ErrorCard extends StatelessWidget {
           Text(message, textAlign: TextAlign.center),
           const SizedBox(height: 16),
           FilledButton(onPressed: onRetry, child: const Text('Réessayer')),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoDepartureCard extends StatelessWidget {
+  const _NoDepartureCard({required this.line, required this.onRetry});
+
+  final TransitLine line;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: _panel,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.schedule_rounded, size: 44, color: line.color),
+          const SizedBox(height: 12),
+          const Text(
+            'Aucun passage annoncé actuellement pour cet arrêt et cette direction.',
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Actualiser'),
+          ),
         ],
       ),
     );

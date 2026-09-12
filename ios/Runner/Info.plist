@@ -16,8 +16,6 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>VoieGo</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>VoieGo utilise votre position pour trouver l’arrêt le plus pratique et estimer le temps de marche.</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

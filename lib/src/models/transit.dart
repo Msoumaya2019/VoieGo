@@ -47,6 +47,34 @@ class TransitLine {
   }
 }
 
+class TransitStop {
+  const TransitStop({required this.id, required this.name});
+
+  factory TransitStop.fromJson(Map<String, dynamic> json) {
+    return TransitStop(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Arrêt sans nom',
+    );
+  }
+
+  final String id;
+  final String name;
+}
+
+class TransitDirection {
+  const TransitDirection({required this.id, required this.label});
+
+  factory TransitDirection.fromJson(Map<String, dynamic> json) {
+    return TransitDirection(
+      id: json['id'] as String? ?? '',
+      label: json['label'] as String? ?? 'Direction inconnue',
+    );
+  }
+
+  final String id;
+  final String label;
+}
+
 Color _hexColor(String? value, Color fallback) {
   final normalized = value?.replaceFirst('#', '');
   if (normalized == null || normalized.length != 6) return fallback;
@@ -108,12 +136,14 @@ class TransitSnapshot {
     required this.alert,
     required this.fetchedAt,
     required this.isDemo,
+    required this.locationMatched,
   });
 
   final List<Departure> departures;
   final TrafficAlert? alert;
   final DateTime fetchedAt;
   final bool isDemo;
+  final bool locationMatched;
 }
 
 const transitLines = <TransitLine>[
