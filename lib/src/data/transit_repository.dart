@@ -143,6 +143,29 @@ class TransitRepository {
     return directions;
   }
 
+  Future<List<NearbyStop>> fetchNearbyStops({
+    required double latitude,
+    required double longitude,
+    required int radiusMeters,
+  }) async {
+    final uri = Uri.parse(config.apiBaseUrl)
+        .resolve('/api/v1/nearby')
+        .replace(queryParameters: {
+          'lat': '$latitude',
+          'lon': '$longitude',
+          'radius': '$radiusMeters',
+        });
+    final response = await _get(
+      uri,
+      'Impossible de charger les arrêts autour de vous.',
+    );
+    return (response['stops'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(NearbyStop.fromJson)
+        .where((stop) => stop.id.isNotEmpty)
+        .toList();
+  }
+
   Future<Map<String, dynamic>> _get(Uri uri, String fallbackMessage) async {
     try {
       final response = await _client

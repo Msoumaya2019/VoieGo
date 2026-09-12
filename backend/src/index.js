@@ -19,6 +19,7 @@ export default {
       '/api/v1/stops',
       '/api/v1/directions',
       '/api/v1/snapshot',
+      '/api/v1/nearby',
     ]);
     if (!supportedRoutes.has(url.pathname)) {
       return json({ error: 'Route inconnue.' }, 404, cors);
@@ -33,6 +34,14 @@ export default {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Erreur PRIM inconnue.';
         return json({ error: message }, 502, cors);
+      }
+    }
+
+    if (url.pathname === '/api/v1/nearby') {
+      try {
+        return await nearbyResponse(url, request, env, context, cors);
+      } catch (error) {
+        return proxyErrorResponse(error, cors);
       }
     }
 
@@ -134,6 +143,7 @@ async function linesResponse(url, request, env, context, cors) {
     metro: 'Metro',
     rer: 'RapidTransit',
     transilien: 'LocalTrain',
+    tramway: 'Tramway',
   };
   const mode = url.searchParams.get('mode');
   const commercialMode = commercialModes[mode];
@@ -160,6 +170,47 @@ async function linesResponse(url, request, env, context, cors) {
     { source: 'prim-navitia', lines },
     200,
     { ...cors, 'Cache-Control': 'public, max-age=86400' },
+  );
+  context.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
+}
+
+async function nearbyResponse(url, request, env, context, cors) {
+  const location = {
+    lat: Number(url.searchParams.get('lat')),
+    lon: Number(url.searchParams.get('lon')),
+  };
+  if (!validLocation(location)) {
+    return json({ error: 'Coordonnées invalides.' }, 400, cors);
+  }
+  const requestedRadius = Number(url.searchParams.get('radius') || 1000);
+  const radius = Math.min(3000, Math.max(200, Math.round(requestedRadius)));
+  const cacheKey = new Request(
+    `${url.origin}/cache/nearby?lat=${location.lat.toFixed(3)}&lon=${location.lon.toFixed(3)}&radius=${radius}`,
+  );
+  const cache = caches.default;
+  const cached = await cache.match(cacheKey);
+  if (cached) return withCors(cached, cors);
+
+  const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
+  const params = new URLSearchParams({ distance: `${radius}`, count: '50' });
+  params.append('type[]', 'stop_area');
+  const coord = `${location.lon};${location.lat}`;
+  const payload = await primFetch(
+    `${base}/coords/${coord}/places_nearby?${params}`,
+    env.PRIM_API_KEY,
+  );
+  const stops = (Array.isArray(payload.places_nearby) ? payload.places_nearby : [])
+    .filter((place) => place.stop_area?.id)
+    .map((place) => ({
+      id: place.stop_area.id,
+      name: place.stop_area.name || 'Arrêt sans nom',
+      distanceMeters: Number(place.distance || 0),
+    }));
+  const response = json(
+    { source: 'prim-navitia', radiusMeters: radius, stops },
+    200,
+    { ...cors, 'Cache-Control': 'public, max-age=60' },
   );
   context.waitUntil(cache.put(cacheKey, response.clone()));
   return response;

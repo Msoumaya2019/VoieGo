@@ -16,6 +16,8 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>VoieGo</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>VoieGo utilise votre position uniquement dans Autour de moi pour afficher les arrêts proches.</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

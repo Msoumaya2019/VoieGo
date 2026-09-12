@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/transit_repository.dart';
 import '../models/transit.dart';
+import '../services/location_service.dart';
 
 const _navy = Color(0xFF07182F);
 const _panel = Color(0xFF102844);
@@ -18,10 +20,12 @@ class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
     required this.repository,
+    required this.locationService,
     required this.demoMode,
   });
 
   final TransitRepository repository;
+  final LocationService locationService;
   final bool demoMode;
 
   @override
@@ -38,11 +42,18 @@ class _HomeScreenState extends State<HomeScreen> {
   TransitDirection? _direction;
   TransitSnapshot? _snapshot;
   bool _loading = true;
-  bool _following = false;
   String? _error;
   String _lineQuery = '';
   final TextEditingController _lineSearchController = TextEditingController();
   Timer? _ticker;
+  int _selectedTab = 0;
+  List<FavoriteJourney> _favorites = const [];
+  List<NearbyStop> _nearbyStops = const [];
+  bool _nearbyLoading = false;
+  String? _nearbyError;
+  bool _autoRefresh = true;
+  int _refreshIntervalSeconds = 30;
+  int _nearbyRadiusMeters = 1000;
 
   @override
   void initState() {
@@ -50,7 +61,13 @@ class _HomeScreenState extends State<HomeScreen> {
     _line = transitLines.firstWhere((line) => line.code == 'L');
     _availableLines = transitLines.where((line) => line.mode == _mode).toList();
     _bootstrap();
-    _ticker = Timer.periodic(const Duration(seconds: 30), (_) {
+    _restartTicker();
+  }
+
+  void _restartTicker() {
+    _ticker?.cancel();
+    if (!_autoRefresh) return;
+    _ticker = Timer.periodic(Duration(seconds: _refreshIntervalSeconds), (_) {
       if (mounted) setState(() {});
       if (_stop != null && _direction != null) _refresh(silent: true);
     });
@@ -67,6 +84,23 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     final storedMode = prefs.getString('selected_mode');
     final storedLine = prefs.getString('selected_line');
+    _autoRefresh = prefs.getBool('auto_refresh') ?? true;
+    _refreshIntervalSeconds = prefs.getInt('refresh_interval') ?? 30;
+    _nearbyRadiusMeters = prefs.getInt('nearby_radius') ?? 1000;
+    final storedFavorites = prefs.getStringList('favorites') ?? const [];
+    _favorites = storedFavorites
+        .map((value) {
+          try {
+            return FavoriteJourney.fromJson(
+              jsonDecode(value) as Map<String, dynamic>,
+            );
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<FavoriteJourney>()
+        .toList();
+    _restartTicker();
     if (storedMode != null && storedLine != null) {
       final mode = TransitMode.values
           .where((value) => value.name == storedMode)
@@ -190,7 +224,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _direction = direction;
       _snapshot = null;
-      _following = false;
     });
     await _refresh();
   }
@@ -198,15 +231,16 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _selectMode(TransitMode mode) async {
     if (_mode == mode) return;
     final localLines = transitLines.where((line) => line.mode == mode).toList();
-    final nextLine = localLines.first;
+    final nextLine = localLines.firstOrNull;
     _lineSearchController.clear();
     setState(() {
       _mode = mode;
       _lineQuery = '';
-      _line = nextLine;
+      if (nextLine != null) _line = nextLine;
       _availableLines = localLines;
       _snapshot = null;
-      _following = false;
+      _loading = true;
+      _error = null;
     });
     try {
       final remoteLines = await widget.repository.fetchLines(mode);
@@ -216,8 +250,14 @@ class _HomeScreenState extends State<HomeScreen> {
           _line = remoteLines.first;
         });
       }
-    } catch (_) {
-      // La liste locale est un secours volontaire.
+    } on TransitException catch (error) {
+      if (localLines.isEmpty && mounted) {
+        setState(() {
+          _loading = false;
+          _error = error.message;
+        });
+        return;
+      }
     }
     await _saveSelection();
     await _loadStopsAndDirections();
@@ -228,7 +268,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _line = line;
       _snapshot = null;
-      _following = false;
     });
     await _saveSelection();
     await _loadStopsAndDirections();
@@ -238,6 +277,136 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('selected_mode', _mode.name);
     await prefs.setString('selected_line', _line.code);
+  }
+
+  FavoriteJourney? get _currentFavorite {
+    final stop = _stop;
+    final direction = _direction;
+    if (stop == null || direction == null) return null;
+    final key = '${_line.lineRef}|${stop.id}|${direction.id}';
+    return _favorites.where((favorite) => favorite.key == key).firstOrNull;
+  }
+
+  Future<void> _toggleFavorite() async {
+    final stop = _stop;
+    final direction = _direction;
+    if (stop == null || direction == null) return;
+    final favorite = FavoriteJourney(
+      line: _line,
+      stop: stop,
+      direction: direction,
+    );
+    setState(() {
+      final exists = _favorites.any((item) => item.key == favorite.key);
+      _favorites = exists
+          ? _favorites.where((item) => item.key != favorite.key).toList()
+          : [..._favorites, favorite];
+    });
+    await _saveFavorites();
+  }
+
+  Future<void> _saveFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      'favorites',
+      _favorites.map((item) => jsonEncode(item.toJson())).toList(),
+    );
+  }
+
+  Future<void> _openFavorite(FavoriteJourney favorite) async {
+    setState(() {
+      _selectedTab = 0;
+      _mode = favorite.line.mode;
+      _line = favorite.line;
+      _stop = favorite.stop;
+      _direction = favorite.direction;
+      _snapshot = null;
+      _loading = true;
+      _error = null;
+      _lineQuery = '';
+      _lineSearchController.clear();
+    });
+    try {
+      final results = await Future.wait([
+        widget.repository.fetchLines(favorite.line.mode),
+        widget.repository.fetchStops(favorite.line),
+        widget.repository.fetchDirections(favorite.line, favorite.stop),
+      ]);
+      if (!mounted) return;
+      final lines = results[0] as List<TransitLine>;
+      final stops = results[1] as List<TransitStop>;
+      final directions = results[2] as List<TransitDirection>;
+      setState(() {
+        _availableLines = lines;
+        _line = lines.where((item) => item.lineRef == favorite.line.lineRef).firstOrNull ?? favorite.line;
+        _availableStops = stops;
+        _stop = stops.where((item) => item.id == favorite.stop.id).firstOrNull ?? favorite.stop;
+        _availableDirections = directions;
+        _direction = directions.where((item) => item.id == favorite.direction.id).firstOrNull ?? favorite.direction;
+      });
+      await _saveSelection();
+      await _refresh();
+    } on TransitException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = error.message;
+      });
+    }
+  }
+
+  Future<void> _loadNearbyStops() async {
+    setState(() {
+      _nearbyLoading = true;
+      _nearbyError = null;
+    });
+    try {
+      final location = await widget.locationService.requestCurrentLocation();
+      final stops = await widget.repository.fetchNearbyStops(
+        latitude: location.latitude,
+        longitude: location.longitude,
+        radiusMeters: _nearbyRadiusMeters,
+      );
+      if (!mounted) return;
+      setState(() {
+        _nearbyStops = stops;
+        _nearbyLoading = false;
+      });
+    } on LocationException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _nearbyLoading = false;
+        _nearbyError = error.message;
+      });
+    } on TransitException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _nearbyLoading = false;
+        _nearbyError = error.message;
+      });
+    }
+  }
+
+  Future<void> _updateSettings({
+    bool? autoRefresh,
+    int? refreshInterval,
+    int? nearbyRadius,
+  }) async {
+    setState(() {
+      if (autoRefresh != null) _autoRefresh = autoRefresh;
+      if (refreshInterval != null) _refreshIntervalSeconds = refreshInterval;
+      if (nearbyRadius != null) _nearbyRadiusMeters = nearbyRadius;
+    });
+    _restartTicker();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('auto_refresh', _autoRefresh);
+    await prefs.setInt('refresh_interval', _refreshIntervalSeconds);
+    await prefs.setInt('nearby_radius', _nearbyRadiusMeters);
+  }
+
+  Future<void> _clearFavorites() async {
+    setState(() => _favorites = const []);
+    await _saveFavorites();
   }
 
   Departure? get _primaryDeparture {
@@ -256,7 +425,8 @@ class _HomeScreenState extends State<HomeScreen> {
         ? matchingLines.take(30).toList()
         : matchingLines.take(100).toList();
     return Scaffold(
-      body: SafeArea(
+      body: switch (_selectedTab) {
+        0 => SafeArea(
         child: RefreshIndicator(
           color: _cyan,
           backgroundColor: _panel,
@@ -340,6 +510,67 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
+        ),
+        1 => _FavoritesTab(
+          favorites: _favorites,
+          onOpen: _openFavorite,
+          onRemove: (favorite) async {
+            setState(() {
+              _favorites = _favorites
+                  .where((item) => item.key != favorite.key)
+                  .toList();
+            });
+            await _saveFavorites();
+          },
+        ),
+        2 => _NearbyTab(
+          stops: _nearbyStops,
+          loading: _nearbyLoading,
+          error: _nearbyError,
+          radiusMeters: _nearbyRadiusMeters,
+          onLoad: _loadNearbyStops,
+        ),
+        _ => _SettingsTab(
+          autoRefresh: _autoRefresh,
+          refreshIntervalSeconds: _refreshIntervalSeconds,
+          nearbyRadiusMeters: _nearbyRadiusMeters,
+          favoritesCount: _favorites.length,
+          onAutoRefreshChanged: (value) =>
+              _updateSettings(autoRefresh: value),
+          onRefreshIntervalChanged: (value) =>
+              _updateSettings(refreshInterval: value),
+          onNearbyRadiusChanged: (value) =>
+              _updateSettings(nearbyRadius: value),
+          onClearFavorites: _clearFavorites,
+        ),
+      },
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedTab,
+        onDestinationSelected: (index) => setState(() => _selectedTab = index),
+        backgroundColor: _panel,
+        indicatorColor: _cyan,
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.schedule_rounded),
+            selectedIcon: Icon(Icons.schedule_rounded, color: _navy),
+            label: 'Horaires',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.star_border_rounded),
+            selectedIcon: Icon(Icons.star_rounded, color: _navy),
+            label: 'Favoris',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.near_me_outlined),
+            selectedIcon: Icon(Icons.near_me_rounded, color: _navy),
+            label: 'Autour',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings_rounded, color: _navy),
+            label: 'Réglages',
+          ),
+        ],
       ),
     );
   }
@@ -359,6 +590,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (departure == null) {
       return _NoDepartureCard(line: _line, onRetry: _refresh);
     }
+    final isFavorite = _currentFavorite != null;
     return Column(
       key: ValueKey('${_mode.name}-${_line.code}'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -370,33 +602,18 @@ class _HomeScreenState extends State<HomeScreen> {
           snapshot: _snapshot!,
           nearby: false,
         ),
-        const SizedBox(height: 14),
-        _MapCard(departure: departure),
         if (_snapshot?.alert case final alert?) ...[
           const SizedBox(height: 14),
           _AlertCard(alert: alert, onTap: () => _showTraffic(alert)),
         ],
         const SizedBox(height: 18),
         FilledButton.icon(
-          onPressed: () {
-            setState(() => _following = !_following);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  _following
-                      ? 'Suivi activé pour ce prochain passage.'
-                      : 'Suivi désactivé.',
-                ),
-              ),
-            );
-          },
+          onPressed: _toggleFavorite,
           icon: Icon(
-            _following
-                ? Icons.notifications_active_rounded
-                : Icons.train_rounded,
+            isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
           ),
           label: Text(
-            _following ? 'Passage suivi' : 'Suivre le prochain passage',
+            isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
           ),
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(58),
@@ -549,79 +766,61 @@ class _ModeSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final itemWidth = (constraints.maxWidth - 24) / 4;
-        return Row(
-          children: TransitMode.values.indexed.map((entry) {
-            final (index, mode) = entry;
-            final active = mode == selected;
-            return Padding(
-              padding: EdgeInsets.only(right: index == 3 ? 0 : 8),
-              child: SizedBox(
-                width: itemWidth,
-                child: Semantics(
-                  selected: active,
-                  button: true,
-                  label: 'Réseau ${mode.label}',
-                  child: InkWell(
-                    onTap: () => onSelected(mode),
-                    borderRadius: BorderRadius.circular(16),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      height: 56,
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      decoration: BoxDecoration(
-                        color: active ? const Color(0xFFEAE7FF) : _panel,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: active
-                              ? Colors.white
-                              : const Color(0xFF28496D),
-                          width: active ? 2 : 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          CircleAvatar(
-                            radius: 12,
-                            backgroundColor: active
-                                ? _navy
-                                : Colors.transparent,
-                            child: Text(
-                              mode.iconLabel,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 8,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Text(
-                                mode.label,
-                                style: TextStyle(
-                                  color: active ? _navy : Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+    return SizedBox(
+      height: 58,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: TransitMode.values.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final mode = TransitMode.values[index];
+          final active = mode == selected;
+          return Semantics(
+            selected: active,
+            button: true,
+            label: 'Réseau ${mode.label}',
+            child: InkWell(
+              onTap: () => onSelected(mode),
+              borderRadius: BorderRadius.circular(16),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                constraints: const BoxConstraints(minWidth: 86),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: active ? const Color(0xFFEAE7FF) : _panel,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: active ? Colors.white : const Color(0xFF28496D),
+                    width: active ? 2 : 1,
                   ),
                 ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      mode.iconLabel,
+                      style: TextStyle(
+                        color: active ? _navy : _cyan,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      mode.label,
+                      style: TextStyle(
+                        color: active ? _navy : Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            );
-          }).toList(),
-        );
-      },
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -663,7 +862,7 @@ class _LineSelector extends StatelessWidget {
                 borderRadius: BorderRadius.circular(16),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
-                  width: 42,
+                  width: line.mode == TransitMode.bus ? 54 : 42,
                   height: 52,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
@@ -681,12 +880,19 @@ class _LineSelector extends StatelessWidget {
                           ]
                         : null,
                   ),
-                  child: Text(
-                    line.code,
-                    style: TextStyle(
-                      color: line.textColor,
-                      fontSize: 21,
-                      fontWeight: FontWeight.w900,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        line.code,
+                        maxLines: 1,
+                        style: TextStyle(
+                          color: line.textColor,
+                          fontSize: line.code.length >= 4 ? 17 : 21,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -995,9 +1201,7 @@ class _NextDepartureCard extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 24),
-              _RouteTimeline(destination: departure.destination),
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
               Text(
                 snapshot.isDemo
                     ? 'Aperçu avec données de démonstration'
@@ -1005,95 +1209,6 @@ class _NextDepartureCard extends StatelessWidget {
                 style: const TextStyle(color: _muted, fontSize: 12),
               ),
             ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RouteTimeline extends StatelessWidget {
-  const _RouteTimeline({required this.destination});
-  final String destination;
-
-  @override
-  Widget build(BuildContext context) {
-    const labels = ['La Défense', 'Puteaux', 'Suresnes', 'Versailles'];
-    return Column(
-      children: [
-        Row(
-          children: List.generate(labels.length * 2 - 1, (index) {
-            if (index.isOdd) {
-              return const Expanded(
-                child: Divider(color: Color(0xFFBDB4FF), thickness: 3),
-              );
-            }
-            final point = index ~/ 2;
-            return Container(
-              width: point == 0 ? 32 : 16,
-              height: point == 0 ? 32 : 16,
-              decoration: BoxDecoration(
-                color: point == 0 ? const Color(0xFFBDB4FF) : _panel,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 3),
-              ),
-              child: point == 0
-                  ? const Icon(Icons.train_rounded, size: 17, color: _navy)
-                  : null,
-            );
-          }),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: labels
-              .map(
-                (label) => Flexible(
-                  child: Text(
-                    label,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 11, color: _muted),
-                  ),
-                ),
-              )
-              .toList(),
-        ),
-      ],
-    );
-  }
-}
-
-class _MapCard extends StatelessWidget {
-  const _MapCard({required this.departure});
-  final Departure departure;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: _panelLight,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.route_rounded, color: _cyan, size: 34),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  departure.stopName,
-                  style: const TextStyle(fontWeight: FontWeight.w900),
-                ),
-                const SizedBox(height: 3),
-                const Text(
-                  'Arrêt de référence de la ligne · aucune localisation requise',
-                  style: TextStyle(color: _muted),
-                ),
-              ],
-            ),
           ),
         ],
       ),
@@ -1149,6 +1264,404 @@ class _AlertCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _FavoritesTab extends StatelessWidget {
+  const _FavoritesTab({
+    required this.favorites,
+    required this.onOpen,
+    required this.onRemove,
+  });
+
+  final List<FavoriteJourney> favorites;
+  final ValueChanged<FavoriteJourney> onOpen;
+  final ValueChanged<FavoriteJourney> onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 36),
+            children: [
+              const _TabHeader(
+                icon: Icons.star_rounded,
+                title: 'Favoris',
+                subtitle: 'Vos arrêts et directions en accès direct',
+              ),
+              const SizedBox(height: 22),
+              if (favorites.isEmpty)
+                const _EmptyTabCard(
+                  icon: Icons.star_border_rounded,
+                  message:
+                      'Ajoutez un arrêt et sa direction depuis l’onglet Horaires.',
+                )
+              else
+                ...favorites.map(
+                  (favorite) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Material(
+                      color: _panel,
+                      borderRadius: BorderRadius.circular(20),
+                      child: InkWell(
+                        onTap: () => onOpen(favorite),
+                        borderRadius: BorderRadius.circular(20),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 54,
+                                height: 48,
+                                padding: const EdgeInsets.all(4),
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: favorite.line.color,
+                                  borderRadius: BorderRadius.circular(13),
+                                ),
+                                child: FittedBox(
+                                  child: Text(
+                                    favorite.line.code,
+                                    style: TextStyle(
+                                      color: favorite.line.textColor,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 13),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      favorite.stop.name,
+                                      style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      favorite.direction.label,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(color: _muted),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Retirer des favoris',
+                                onPressed: () => onRemove(favorite),
+                                icon: const Icon(
+                                  Icons.star_rounded,
+                                  color: _yellow,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NearbyTab extends StatelessWidget {
+  const _NearbyTab({
+    required this.stops,
+    required this.loading,
+    required this.error,
+    required this.radiusMeters,
+    required this.onLoad,
+  });
+
+  final List<NearbyStop> stops;
+  final bool loading;
+  final String? error;
+  final int radiusMeters;
+  final VoidCallback onLoad;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 36),
+            children: [
+              const _TabHeader(
+                icon: Icons.near_me_rounded,
+                title: 'Autour de moi',
+                subtitle: 'Les arrêts les plus proches, à votre demande',
+              ),
+              const SizedBox(height: 22),
+              FilledButton.icon(
+                onPressed: loading ? null : onLoad,
+                icon: loading
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.my_location_rounded),
+                label: Text(
+                  loading
+                      ? 'Recherche en cours…'
+                      : 'Trouver les arrêts dans un rayon de ${radiusMeters} m',
+                ),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                  backgroundColor: _cyan,
+                  foregroundColor: _navy,
+                ),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 14),
+                _EmptyTabCard(
+                  icon: Icons.location_off_rounded,
+                  message: error!,
+                ),
+              ],
+              if (!loading && error == null && stops.isEmpty) ...[
+                const SizedBox(height: 14),
+                const _EmptyTabCard(
+                  icon: Icons.location_searching_rounded,
+                  message:
+                      'La localisation reste désactivée tant que vous n’appuyez pas sur le bouton.',
+                ),
+              ],
+              if (stops.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                ...stops.map(
+                  (stop) => ListTile(
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 4,
+                    ),
+                    tileColor: _panel,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    leading: const CircleAvatar(
+                      backgroundColor: _panelLight,
+                      child: Icon(Icons.directions_transit_rounded, color: _cyan),
+                    ),
+                    title: Text(
+                      stop.name,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    trailing: Text(
+                      stop.distanceMeters < 1000
+                          ? '${stop.distanceMeters} m'
+                          : '${(stop.distanceMeters / 1000).toStringAsFixed(1)} km',
+                      style: const TextStyle(color: _cyan),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsTab extends StatelessWidget {
+  const _SettingsTab({
+    required this.autoRefresh,
+    required this.refreshIntervalSeconds,
+    required this.nearbyRadiusMeters,
+    required this.favoritesCount,
+    required this.onAutoRefreshChanged,
+    required this.onRefreshIntervalChanged,
+    required this.onNearbyRadiusChanged,
+    required this.onClearFavorites,
+  });
+
+  final bool autoRefresh;
+  final int refreshIntervalSeconds;
+  final int nearbyRadiusMeters;
+  final int favoritesCount;
+  final ValueChanged<bool> onAutoRefreshChanged;
+  final ValueChanged<int> onRefreshIntervalChanged;
+  final ValueChanged<int> onNearbyRadiusChanged;
+  final VoidCallback onClearFavorites;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 36),
+            children: [
+              const _TabHeader(
+                icon: Icons.settings_rounded,
+                title: 'Réglages',
+                subtitle: 'Personnalisez le fonctionnement de VoieGo',
+              ),
+              const SizedBox(height: 22),
+              SwitchListTile(
+                value: autoRefresh,
+                onChanged: onAutoRefreshChanged,
+                tileColor: _panel,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                title: const Text('Actualisation automatique'),
+                subtitle: const Text('Mettre à jour les horaires en arrière-plan'),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: refreshIntervalSeconds,
+                decoration: _selectorDecoration(
+                  label: 'Fréquence d’actualisation',
+                  icon: Icons.refresh_rounded,
+                ),
+                items: const [30, 60, 120]
+                    .map(
+                      (seconds) => DropdownMenuItem(
+                        value: seconds,
+                        child: Text('$seconds secondes'),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) onRefreshIntervalChanged(value);
+                },
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: nearbyRadiusMeters,
+                decoration: _selectorDecoration(
+                  label: 'Rayon autour de moi',
+                  icon: Icons.radar_rounded,
+                ),
+                items: const [500, 1000, 2000, 3000]
+                    .map(
+                      (meters) => DropdownMenuItem(
+                        value: meters,
+                        child: Text('$meters mètres'),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) onNearbyRadiusChanged(value);
+                },
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                tileColor: _panel,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                leading: const Icon(Icons.delete_outline_rounded, color: _yellow),
+                title: const Text('Effacer les favoris'),
+                subtitle: Text('$favoritesCount favori${favoritesCount > 1 ? 's' : ''} enregistré${favoritesCount > 1 ? 's' : ''}'),
+                enabled: favoritesCount > 0,
+                onTap: favoritesCount > 0 ? onClearFavorites : null,
+              ),
+              const SizedBox(height: 12),
+              const ListTile(
+                tileColor: _panel,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(18)),
+                ),
+                leading: Icon(Icons.shield_outlined, color: _cyan),
+                title: Text('Confidentialité'),
+                subtitle: Text(
+                  'La position est utilisée uniquement à la demande et les favoris restent sur l’appareil.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              const ListTile(
+                tileColor: _panel,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(18)),
+                ),
+                leading: Icon(Icons.info_outline_rounded, color: _cyan),
+                title: Text('VoieGo 1.0.0'),
+                subtitle: Text('Données : Île-de-France Mobilités / PRIM'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TabHeader extends StatelessWidget {
+  const _TabHeader({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 25,
+          backgroundColor: _cyan,
+          child: Icon(icon, color: _navy),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: Theme.of(context).textTheme.headlineLarge),
+              const SizedBox(height: 4),
+              Text(subtitle, style: const TextStyle(color: _muted)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _EmptyTabCard extends StatelessWidget {
+  const _EmptyTabCard({required this.icon, required this.message});
+  final IconData icon;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: _panel,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: _cyan, size: 42),
+          const SizedBox(height: 12),
+          Text(message, textAlign: TextAlign.center),
+        ],
       ),
     );
   }

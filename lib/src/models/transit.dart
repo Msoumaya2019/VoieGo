@@ -1,6 +1,6 @@
 import 'dart:ui';
 
-enum TransitMode { bus, metro, rer, transilien }
+enum TransitMode { bus, metro, rer, transilien, tramway }
 
 extension TransitModeLabel on TransitMode {
   String get label => switch (this) {
@@ -8,6 +8,7 @@ extension TransitModeLabel on TransitMode {
     TransitMode.metro => 'Métro',
     TransitMode.rer => 'RER',
     TransitMode.transilien => 'Transilien',
+    TransitMode.tramway => 'Tramway',
   };
 
   String get iconLabel => switch (this) {
@@ -15,6 +16,7 @@ extension TransitModeLabel on TransitMode {
     TransitMode.metro => 'M',
     TransitMode.rer => 'R',
     TransitMode.transilien => 'TR',
+    TransitMode.tramway => 'T',
   };
 }
 
@@ -73,6 +75,79 @@ class TransitDirection {
 
   final String id;
   final String label;
+}
+
+class NearbyStop {
+  const NearbyStop({
+    required this.id,
+    required this.name,
+    required this.distanceMeters,
+  });
+
+  factory NearbyStop.fromJson(Map<String, dynamic> json) {
+    return NearbyStop(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Arrêt sans nom',
+      distanceMeters: (json['distanceMeters'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  final String id;
+  final String name;
+  final int distanceMeters;
+}
+
+class FavoriteJourney {
+  const FavoriteJourney({
+    required this.line,
+    required this.stop,
+    required this.direction,
+  });
+
+  factory FavoriteJourney.fromJson(Map<String, dynamic> json) {
+    final modeName = json['mode'] as String? ?? '';
+    final mode = TransitMode.values.firstWhere(
+      (value) => value.name == modeName,
+      orElse: () => TransitMode.bus,
+    );
+    return FavoriteJourney(
+      line: TransitLine(
+        code: json['lineCode'] as String? ?? '?',
+        mode: mode,
+        lineRef: json['lineRef'] as String? ?? '',
+        color: Color((json['lineColor'] as num?)?.toInt() ?? 0xFF2A6FBB),
+        textColor: Color(
+          (json['lineTextColor'] as num?)?.toInt() ?? 0xFFFFFFFF,
+        ),
+      ),
+      stop: TransitStop(
+        id: json['stopId'] as String? ?? '',
+        name: json['stopName'] as String? ?? 'Arrêt sans nom',
+      ),
+      direction: TransitDirection(
+        id: json['directionId'] as String? ?? '',
+        label: json['directionLabel'] as String? ?? 'Direction inconnue',
+      ),
+    );
+  }
+
+  final TransitLine line;
+  final TransitStop stop;
+  final TransitDirection direction;
+
+  String get key => '${line.lineRef}|${stop.id}|${direction.id}';
+
+  Map<String, dynamic> toJson() => {
+    'mode': line.mode.name,
+    'lineCode': line.code,
+    'lineRef': line.lineRef,
+    'lineColor': line.color.toARGB32(),
+    'lineTextColor': line.textColor.toARGB32(),
+    'stopId': stop.id,
+    'stopName': stop.name,
+    'directionId': direction.id,
+    'directionLabel': direction.label,
+  };
 }
 
 Color _hexColor(String? value, Color fallback) {

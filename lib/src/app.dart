@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'data/transit_repository.dart';
 import 'screens/home_screen.dart';
+import 'services/location_service.dart';
 
 class VoieGoApp extends StatelessWidget {
   const VoieGoApp({
@@ -60,6 +61,7 @@ class VoieGoApp extends StatelessWidget {
       ),
       home: HomeScreen(
         repository: repository,
+        locationService: LocationService(),
         demoMode: demoMode,
       ),
     );
