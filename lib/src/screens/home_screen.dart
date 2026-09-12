@@ -695,7 +695,7 @@ class _Header extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 12),
-        const Expanded(
+        Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -707,7 +707,7 @@ class _Header extends StatelessWidget {
                     fontWeight: FontWeight.w900,
                     color: Theme.of(context).colorScheme.onSurface,
                   ),
-                  children: [
+                  children: const [
                     TextSpan(text: 'Voie'),
                     TextSpan(
                       text: 'Go',
@@ -716,7 +716,7 @@ class _Header extends StatelessWidget {
                   ],
                 ),
               ),
-              SizedBox(height: 5),
+              const SizedBox(height: 5),
               Text(
                 'PLUS LOIN ENSEMBLE',
                 style: TextStyle(
