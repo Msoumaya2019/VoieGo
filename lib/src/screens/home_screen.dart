@@ -1987,10 +1987,15 @@ class _AddressAutocompleteFieldState extends State<_AddressAutocompleteField> {
             child: Column(
               children: _suggestions.map((place) {
                 final isStop = place.type == 'stop_area';
+                final isPoi = place.type == 'poi';
                 return ListTile(
                   dense: true,
                   leading: Icon(
-                    isStop ? Icons.directions_transit_rounded : Icons.location_on_outlined,
+                    isStop
+                        ? Icons.directions_transit_rounded
+                        : isPoi
+                        ? Icons.place_rounded
+                        : Icons.location_on_outlined,
                     color: _cyan,
                   ),
                   title: Text(
@@ -2019,6 +2024,9 @@ class _JourneyCard extends StatelessWidget {
 
   String _time(DateTime value) =>
       '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+
+  String _timeWithH(DateTime value) =>
+      '${value.hour.toString().padLeft(2, '0')}h${value.minute.toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext context) {
@@ -2056,6 +2064,11 @@ class _JourneyCard extends StatelessWidget {
           const Divider(height: 24),
           ...journey.sections.map((section) {
             final isTransit = section.type == 'public_transport';
+            final passageTime = section.departureAt == null
+                ? null
+                : section.arrivalAt == null
+                ? _timeWithH(section.departureAt!)
+                : '${_timeWithH(section.departureAt!)} → ${_timeWithH(section.arrivalAt!)}';
             final title = isTransit
                 ? '${section.mode}${section.line == null ? '' : ' ${section.line}'}'
                 : 'Marche · ${section.durationMinutes} min';
@@ -2073,7 +2086,34 @@ class _JourneyCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                style: const TextStyle(fontWeight: FontWeight.w900),
+                              ),
+                            ),
+                            if (isTransit && passageTime != null)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 9,
+                                  vertical: 5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _cyan.withValues(alpha: 0.14),
+                                  borderRadius: BorderRadius.circular(9),
+                                ),
+                                child: Text(
+                                  passageTime,
+                                  style: const TextStyle(
+                                    color: _cyan,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
                         Text(
                           '${section.from} → ${section.to}${section.direction == null ? '' : '\n${section.direction}'}',
                           style: TextStyle(
@@ -2292,7 +2332,7 @@ class _SettingsTab extends StatelessWidget {
                   borderRadius: BorderRadius.circular(18),
                 ),
                 leading: const Icon(Icons.info_outline_rounded, color: _cyan),
-                title: const Text('VoieGo 1.2.0'),
+                title: const Text('VoieGo 1.3.0'),
                 subtitle: const Text(
                   'Données : Île-de-France Mobilités / PRIM',
                 ),

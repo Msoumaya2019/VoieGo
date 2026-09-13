@@ -283,9 +283,10 @@ async function placesResponse(url, env, cors) {
   const params = new URLSearchParams({ q: query, count: '7' });
   params.append('type[]', 'address');
   params.append('type[]', 'stop_area');
+  params.append('type[]', 'poi');
   const payload = await primFetch(`${base}/places?${params}`, env.PRIM_API_KEY);
   const places = (Array.isArray(payload.places) ? payload.places : [])
-    .filter((place) => place.id && (place.address || place.stop_area))
+    .filter((place) => place.id && (place.address || place.stop_area || place.poi))
     .slice(0, 7)
     .map(normalizePlaceSuggestion);
   return json({ source: 'prim-navitia', places }, 200, {
@@ -297,16 +298,17 @@ async function placesResponse(url, env, cors) {
 function normalizePlaceSuggestion(place) {
   const region = place.administrative_region ||
     place.address?.administrative_regions?.find((item) => item.level === 8) ||
-    place.stop_area?.administrative_regions?.find((item) => item.level === 8);
+    place.stop_area?.administrative_regions?.find((item) => item.level === 8) ||
+    place.poi?.administrative_regions?.find((item) => item.level === 8);
   const city = region?.name || '';
   const postcode = region?.zip_code || '';
   const detail = [postcode, city].filter(Boolean).join(' ');
-  const name = place.name || place.address?.name || place.stop_area?.name || '';
+  const name = place.name || place.address?.name || place.stop_area?.name || place.poi?.name || '';
   return {
     id: place.id,
     name,
     label: detail && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${detail}` : name,
-    type: place.stop_area ? 'stop_area' : 'address',
+    type: place.stop_area ? 'stop_area' : place.poi ? 'poi' : 'address',
   };
 }
 
@@ -318,14 +320,15 @@ async function resolvePlace(base, apiKey, query) {
   const params = new URLSearchParams({ q: query, count: '10' });
   params.append('type[]', 'address');
   params.append('type[]', 'stop_area');
+  params.append('type[]', 'poi');
   const payload = await primFetch(`${base}/places?${params}`, apiKey);
   const places = Array.isArray(payload.places) ? payload.places : [];
-  const place = places.find((item) => item.id && (item.address || item.stop_area));
+  const place = places.find((item) => item.id && (item.address || item.stop_area || item.poi));
   if (!place) throw new ProxyError(`Adresse introuvable : ${query}`, 404);
   return { id: place.id, name: place.name || query };
 }
 
-function normalizeJourney(journey) {
+export function normalizeJourney(journey) {
   return {
     departureAt: navitiaDateToIso(journey.departure_date_time),
     arrivalAt: navitiaDateToIso(journey.arrival_date_time),
@@ -340,6 +343,12 @@ function normalizeJourney(journey) {
         direction: section.display_informations?.direction || null,
         from: section.from?.name || '',
         to: section.to?.name || '',
+        departureAt: section.departure_date_time
+          ? navitiaDateToIso(section.departure_date_time)
+          : null,
+        arrivalAt: section.arrival_date_time
+          ? navitiaDateToIso(section.arrival_date_time)
+          : null,
         durationSeconds: Number(section.duration || 0),
       })),
   };

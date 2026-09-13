@@ -160,6 +160,8 @@ class JourneySection {
     required this.from,
     required this.to,
     required this.durationSeconds,
+    this.departureAt,
+    this.arrivalAt,
   });
 
   factory JourneySection.fromJson(Map<String, dynamic> json) {
@@ -171,6 +173,8 @@ class JourneySection {
       from: json['from'] as String? ?? '',
       to: json['to'] as String? ?? '',
       durationSeconds: (json['durationSeconds'] as num?)?.toInt() ?? 0,
+      departureAt: _dateOrNull(json['departureAt']),
+      arrivalAt: _dateOrNull(json['arrivalAt']),
     );
   }
 
@@ -181,8 +185,15 @@ class JourneySection {
   final String from;
   final String to;
   final int durationSeconds;
+  final DateTime? departureAt;
+  final DateTime? arrivalAt;
 
   int get durationMinutes => (durationSeconds / 60).ceil();
+}
+
+DateTime? _dateOrNull(dynamic value) {
+  if (value is! String || value.isEmpty) return null;
+  return DateTime.tryParse(value)?.toLocal();
 }
 
 class FavoriteJourney {
