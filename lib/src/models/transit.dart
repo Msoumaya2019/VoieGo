@@ -97,6 +97,71 @@ class NearbyStop {
   final int distanceMeters;
 }
 
+class TransitJourney {
+  const TransitJourney({
+    required this.departureAt,
+    required this.arrivalAt,
+    required this.durationSeconds,
+    required this.transfers,
+    required this.sections,
+  });
+
+  factory TransitJourney.fromJson(Map<String, dynamic> json) {
+    return TransitJourney(
+      departureAt: DateTime.parse(json['departureAt'] as String).toLocal(),
+      arrivalAt: DateTime.parse(json['arrivalAt'] as String).toLocal(),
+      durationSeconds: (json['durationSeconds'] as num?)?.toInt() ?? 0,
+      transfers: (json['transfers'] as num?)?.toInt() ?? 0,
+      sections: (json['sections'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(JourneySection.fromJson)
+          .toList(),
+    );
+  }
+
+  final DateTime departureAt;
+  final DateTime arrivalAt;
+  final int durationSeconds;
+  final int transfers;
+  final List<JourneySection> sections;
+
+  int get durationMinutes => (durationSeconds / 60).ceil();
+}
+
+class JourneySection {
+  const JourneySection({
+    required this.type,
+    required this.mode,
+    required this.line,
+    required this.direction,
+    required this.from,
+    required this.to,
+    required this.durationSeconds,
+  });
+
+  factory JourneySection.fromJson(Map<String, dynamic> json) {
+    return JourneySection(
+      type: json['type'] as String? ?? 'transfer',
+      mode: json['mode'] as String? ?? 'Marche',
+      line: json['line'] as String?,
+      direction: json['direction'] as String?,
+      from: json['from'] as String? ?? '',
+      to: json['to'] as String? ?? '',
+      durationSeconds: (json['durationSeconds'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  final String type;
+  final String mode;
+  final String? line;
+  final String? direction;
+  final String from;
+  final String to;
+  final int durationSeconds;
+
+  int get durationMinutes => (durationSeconds / 60).ceil();
+}
+
 class FavoriteJourney {
   const FavoriteJourney({
     required this.line,

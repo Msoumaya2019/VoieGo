@@ -166,6 +166,57 @@ class TransitRepository {
         .toList();
   }
 
+  Future<List<TransitJourney>> fetchJourneys({
+    required String from,
+    required String to,
+  }) async {
+    if (config.demoMode) {
+      final now = DateTime.now();
+      return [
+        TransitJourney(
+          departureAt: now.add(const Duration(minutes: 4)),
+          arrivalAt: now.add(const Duration(minutes: 39)),
+          durationSeconds: 2100,
+          transfers: 1,
+          sections: const [
+            JourneySection(
+              type: 'street_network',
+              mode: 'Marche',
+              line: null,
+              direction: null,
+              from: 'Départ',
+              to: 'Arrêt de départ',
+              durationSeconds: 300,
+            ),
+            JourneySection(
+              type: 'public_transport',
+              mode: 'Métro',
+              line: '1',
+              direction: 'Direction terminus',
+              from: 'Arrêt de départ',
+              to: 'Arrêt d’arrivée',
+              durationSeconds: 1500,
+            ),
+          ],
+        ),
+      ];
+    }
+    final uri = Uri.parse(config.apiBaseUrl)
+        .resolve('/api/v1/journeys')
+        .replace(queryParameters: {'from': from, 'to': to});
+    final response = await _get(uri, 'Impossible de calculer cet itinéraire.');
+    final journeys = (response['journeys'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(TransitJourney.fromJson)
+        .toList();
+    if (journeys.isEmpty) {
+      throw const TransitException(
+        'Aucun itinéraire en transport en commun n’a été trouvé.',
+      );
+    }
+    return journeys;
+  }
+
   Future<Map<String, dynamic>> _get(Uri uri, String fallbackMessage) async {
     try {
       final response = await _client

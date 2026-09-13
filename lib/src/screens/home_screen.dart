@@ -58,7 +58,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _nearbyError;
   bool _autoRefresh = true;
   int _refreshIntervalSeconds = 30;
-  int _nearbyRadiusMeters = 1000;
+  int _nearbyRadiusMeters = 500;
   int _lastPushMessageSequence = 0;
 
   @override
@@ -111,7 +111,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final storedLine = prefs.getString('selected_line');
     _autoRefresh = prefs.getBool('auto_refresh') ?? true;
     _refreshIntervalSeconds = prefs.getInt('refresh_interval') ?? 30;
-    _nearbyRadiusMeters = prefs.getInt('nearby_radius') ?? 1000;
+    final storedRadius = prefs.getInt('nearby_radius') ?? 500;
+    _nearbyRadiusMeters = const {100, 200, 500}.contains(storedRadius)
+        ? storedRadius
+        : 500;
     final storedFavorites = prefs.getStringList('favorites') ?? const [];
     _favorites = storedFavorites
         .map((value) {
@@ -567,6 +570,7 @@ class _HomeScreenState extends State<HomeScreen> {
           radiusMeters: _nearbyRadiusMeters,
           onLoad: _loadNearbyStops,
         ),
+        3 => _ItineraryTab(repository: widget.repository),
         _ => _SettingsTab(
           darkMode: widget.darkMode,
           autoRefresh: _autoRefresh,
@@ -608,6 +612,11 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.near_me_outlined),
             selectedIcon: Icon(Icons.near_me_rounded, color: _navy),
             label: 'Autour',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.route_outlined),
+            selectedIcon: Icon(Icons.route_rounded, color: _navy),
+            label: 'Itinéraire',
           ),
           NavigationDestination(
             icon: Icon(Icons.settings_outlined),
@@ -1603,6 +1612,221 @@ class _NearbyTab extends StatelessWidget {
   }
 }
 
+class _ItineraryTab extends StatefulWidget {
+  const _ItineraryTab({required this.repository});
+
+  final TransitRepository repository;
+
+  @override
+  State<_ItineraryTab> createState() => _ItineraryTabState();
+}
+
+class _ItineraryTabState extends State<_ItineraryTab> {
+  final _fromController = TextEditingController();
+  final _toController = TextEditingController();
+  List<TransitJourney> _journeys = const [];
+  bool _loading = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _fromController.dispose();
+    _toController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search() async {
+    final from = _fromController.text.trim();
+    final to = _toController.text.trim();
+    if (from.length < 3 || to.length < 3) {
+      setState(() => _error = 'Renseignez une adresse de départ et d’arrivée.');
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _loading = true;
+      _error = null;
+      _journeys = const [];
+    });
+    try {
+      final journeys = await widget.repository.fetchJourneys(from: from, to: to);
+      if (!mounted) return;
+      setState(() => _journeys = journeys);
+    } on TransitException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _swap() {
+    final from = _fromController.text;
+    _fromController.text = _toController.text;
+    _toController.text = from;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 36),
+            children: [
+              const _TabHeader(
+                icon: Icons.route_rounded,
+                title: 'Itinéraire',
+                subtitle: 'Calculez votre trajet en transports en commun',
+              ),
+              const SizedBox(height: 22),
+              TextField(
+                controller: _fromController,
+                textInputAction: TextInputAction.next,
+                decoration: _selectorDecoration(
+                  context,
+                  label: 'Adresse de départ',
+                  icon: Icons.trip_origin_rounded,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Center(
+                  child: IconButton.filledTonal(
+                    tooltip: 'Inverser les adresses',
+                    onPressed: _swap,
+                    icon: const Icon(Icons.swap_vert_rounded),
+                  ),
+                ),
+              ),
+              TextField(
+                controller: _toController,
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => _search(),
+                decoration: _selectorDecoration(
+                  context,
+                  label: 'Adresse d’arrivée',
+                  icon: Icons.location_on_rounded,
+                ),
+              ),
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: _loading ? null : _search,
+                icon: _loading
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.search_rounded),
+                label: Text(_loading ? 'Calcul en cours…' : 'Calculer le trajet'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                  backgroundColor: _cyan,
+                  foregroundColor: _navy,
+                ),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 14),
+                _EmptyTabCard(icon: Icons.route_outlined, message: _error!),
+              ],
+              if (_journeys.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                ..._journeys.map(
+                  (journey) => Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: _JourneyCard(journey: journey),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _JourneyCard extends StatelessWidget {
+  const _JourneyCard({required this.journey});
+
+  final TransitJourney journey;
+
+  String _time(DateTime value) =>
+      '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${_time(journey.departureAt)} → ${_time(journey.arrivalAt)}',
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                ),
+              ),
+              Text(
+                '${journey.durationMinutes} min',
+                style: const TextStyle(color: _yellow, fontWeight: FontWeight.w900),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            journey.transfers == 0
+                ? 'Direct'
+                : '${journey.transfers} correspondance${journey.transfers > 1 ? 's' : ''}',
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+          ),
+          const Divider(height: 24),
+          ...journey.sections.map((section) {
+            final isTransit = section.type == 'public_transport';
+            final title = isTransit
+                ? '${section.mode}${section.line == null ? '' : ' ${section.line}'}'
+                : 'Marche · ${section.durationMinutes} min';
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    isTransit ? Icons.directions_transit_rounded : Icons.directions_walk_rounded,
+                    color: isTransit ? _cyan : _green,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+                        Text(
+                          '${section.from} → ${section.to}${section.direction == null ? '' : '\n${section.direction}'}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
 class _SettingsTab extends StatelessWidget {
   const _SettingsTab({
     required this.darkMode,
@@ -1706,7 +1930,7 @@ class _SettingsTab extends StatelessWidget {
                   label: 'Rayon autour de moi',
                   icon: Icons.radar_rounded,
                 ),
-                items: const [500, 1000, 2000, 3000]
+                items: const [100, 200, 500]
                     .map(
                       (meters) => DropdownMenuItem(
                         value: meters,

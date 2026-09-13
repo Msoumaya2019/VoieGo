@@ -20,6 +20,7 @@ export default {
       '/api/v1/directions',
       '/api/v1/snapshot',
       '/api/v1/nearby',
+      '/api/v1/journeys',
     ]);
     if (!supportedRoutes.has(url.pathname)) {
       return json({ error: 'Route inconnue.' }, 404, cors);
@@ -40,6 +41,14 @@ export default {
     if (url.pathname === '/api/v1/nearby') {
       try {
         return await nearbyResponse(url, request, env, context, cors);
+      } catch (error) {
+        return proxyErrorResponse(error, cors);
+      }
+    }
+
+    if (url.pathname === '/api/v1/journeys') {
+      try {
+        return await journeysResponse(url, env, cors);
       } catch (error) {
         return proxyErrorResponse(error, cors);
       }
@@ -183,8 +192,8 @@ async function nearbyResponse(url, request, env, context, cors) {
   if (!validLocation(location)) {
     return json({ error: 'Coordonnées invalides.' }, 400, cors);
   }
-  const requestedRadius = Number(url.searchParams.get('radius') || 1000);
-  const radius = Math.min(3000, Math.max(200, Math.round(requestedRadius)));
+  const requestedRadius = Number(url.searchParams.get('radius') || 500);
+  const radius = Math.min(500, Math.max(100, Math.round(requestedRadius)));
   const cacheKey = new Request(
     `${url.origin}/cache/nearby?lat=${location.lat.toFixed(3)}&lon=${location.lon.toFixed(3)}&radius=${radius}`,
   );
@@ -214,6 +223,69 @@ async function nearbyResponse(url, request, env, context, cors) {
   );
   context.waitUntil(cache.put(cacheKey, response.clone()));
   return response;
+}
+
+async function journeysResponse(url, env, cors) {
+  const fromQuery = (url.searchParams.get('from') || '').trim();
+  const toQuery = (url.searchParams.get('to') || '').trim();
+  if (fromQuery.length < 3 || toQuery.length < 3 || fromQuery.length > 200 || toQuery.length > 200) {
+    return json({ error: 'Renseignez deux adresses valides.' }, 400, cors);
+  }
+
+  const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
+  const [from, to] = await Promise.all([
+    resolvePlace(base, env.PRIM_API_KEY, fromQuery),
+    resolvePlace(base, env.PRIM_API_KEY, toQuery),
+  ]);
+  const params = new URLSearchParams({
+    from: from.id,
+    to: to.id,
+    count: '3',
+    datetime_represents: 'departure',
+  });
+  params.append('first_section_mode[]', 'walking');
+  params.append('last_section_mode[]', 'walking');
+  const payload = await primFetch(`${base}/journeys?${params}`, env.PRIM_API_KEY);
+  const journeys = (Array.isArray(payload.journeys) ? payload.journeys : [])
+    .filter((journey) => journey.type !== 'non_pt_walk')
+    .slice(0, 3)
+    .map(normalizeJourney);
+  return json(
+    { source: 'prim-navitia', from, to, journeys },
+    200,
+    { ...cors, 'Cache-Control': 'public, max-age=30' },
+  );
+}
+
+async function resolvePlace(base, apiKey, query) {
+  const params = new URLSearchParams({ q: query, count: '10' });
+  params.append('type[]', 'address');
+  params.append('type[]', 'stop_area');
+  const payload = await primFetch(`${base}/places?${params}`, apiKey);
+  const places = Array.isArray(payload.places) ? payload.places : [];
+  const place = places.find((item) => item.id && (item.address || item.stop_area));
+  if (!place) throw new ProxyError(`Adresse introuvable : ${query}`, 404);
+  return { id: place.id, name: place.name || query };
+}
+
+function normalizeJourney(journey) {
+  return {
+    departureAt: navitiaDateToIso(journey.departure_date_time),
+    arrivalAt: navitiaDateToIso(journey.arrival_date_time),
+    durationSeconds: Number(journey.duration || 0),
+    transfers: Number(journey.nb_transfers || 0),
+    sections: (Array.isArray(journey.sections) ? journey.sections : [])
+      .filter((section) => !['waiting', 'boarding', 'landing'].includes(section.type))
+      .map((section) => ({
+        type: section.type || 'transfer',
+        mode: section.display_informations?.commercial_mode || section.mode || 'Marche',
+        line: section.display_informations?.code || null,
+        direction: section.display_informations?.direction || null,
+        from: section.from?.name || '',
+        to: section.to?.name || '',
+        durationSeconds: Number(section.duration || 0),
+      })),
+  };
 }
 
 async function stopsResponse(url, request, env, context, cors, lineId) {
