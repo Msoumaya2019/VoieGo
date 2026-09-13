@@ -209,8 +209,8 @@ class TransitRepository {
         .replace(queryParameters: {
           'from': from,
           'to': to,
-          if (fromId != null) 'fromId': fromId,
-          if (toId != null) 'toId': toId,
+          'fromId': ?fromId,
+          'toId': ?toId,
           if (departureAt != null) 'datetime': _navitiaDate(departureAt),
         });
     final response = await _get(uri, 'Impossible de calculer cet itinéraire.');
