@@ -4,16 +4,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'data/transit_repository.dart';
 import 'screens/home_screen.dart';
 import 'services/location_service.dart';
+import 'services/push_notification_service.dart';
 
 class VoieGoApp extends StatefulWidget {
   const VoieGoApp({
     super.key,
     required this.repository,
     required this.demoMode,
+    this.pushNotifications,
   });
 
   final TransitRepository repository;
   final bool demoMode;
+  final PushNotificationService? pushNotifications;
 
   @override
   State<VoieGoApp> createState() => _VoieGoAppState();
@@ -21,11 +24,22 @@ class VoieGoApp extends StatefulWidget {
 
 class _VoieGoAppState extends State<VoieGoApp> {
   bool _darkMode = true;
+  late final PushNotificationService _pushNotifications;
+  late final bool _ownsPushNotifications;
 
   @override
   void initState() {
     super.initState();
+    _ownsPushNotifications = widget.pushNotifications == null;
+    _pushNotifications =
+        widget.pushNotifications ?? PushNotificationService();
     _loadTheme();
+  }
+
+  @override
+  void dispose() {
+    if (_ownsPushNotifications) _pushNotifications.dispose();
+    super.dispose();
   }
 
   Future<void> _loadTheme() async {
@@ -54,6 +68,7 @@ class _VoieGoAppState extends State<VoieGoApp> {
         demoMode: widget.demoMode,
         darkMode: _darkMode,
         onDarkModeChanged: _setDarkMode,
+        pushNotifications: _pushNotifications,
       ),
     );
   }

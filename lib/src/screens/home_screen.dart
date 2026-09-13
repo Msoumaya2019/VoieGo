@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/transit_repository.dart';
 import '../models/transit.dart';
 import '../services/location_service.dart';
+import '../services/push_notification_service.dart';
 
 const _navy = Color(0xFF07182F);
 const _cyan = Color(0xFF5FE3FF);
@@ -21,6 +23,7 @@ class HomeScreen extends StatefulWidget {
     required this.demoMode,
     required this.darkMode,
     required this.onDarkModeChanged,
+    required this.pushNotifications,
   });
 
   final TransitRepository repository;
@@ -28,6 +31,7 @@ class HomeScreen extends StatefulWidget {
   final bool demoMode;
   final bool darkMode;
   final ValueChanged<bool> onDarkModeChanged;
+  final PushNotificationService pushNotifications;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -55,6 +59,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _autoRefresh = true;
   int _refreshIntervalSeconds = 30;
   int _nearbyRadiusMeters = 1000;
+  int _lastPushMessageSequence = 0;
 
   @override
   void initState() {
@@ -63,6 +68,24 @@ class _HomeScreenState extends State<HomeScreen> {
     _availableLines = transitLines.where((line) => line.mode == _mode).toList();
     _bootstrap();
     _restartTicker();
+    widget.pushNotifications.addListener(_handlePushNotificationChange);
+  }
+
+  void _handlePushNotificationChange() {
+    if (!mounted) return;
+    setState(() {});
+    final service = widget.pushNotifications;
+    if (service.messageSequence <= _lastPushMessageSequence) return;
+    _lastPushMessageSequence = service.messageSequence;
+    final notification = service.latestMessage?.notification;
+    final title = notification?.title ?? 'Nouvelle information VoieGo';
+    final body = notification?.body;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(body == null ? title : '$title\n$body')),
+      );
+    });
   }
 
   void _restartTicker() {
@@ -78,6 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _ticker?.cancel();
     _lineSearchController.dispose();
+    widget.pushNotifications.removeListener(_handlePushNotificationChange);
     super.dispose();
   }
 
@@ -410,6 +434,18 @@ class _HomeScreenState extends State<HomeScreen> {
     await _saveFavorites();
   }
 
+  Future<void> _setPushNotifications(bool value) async {
+    await widget.pushNotifications.setEnabled(value);
+    if (!mounted) return;
+    setState(() {});
+    final error = widget.pushNotifications.error;
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error)),
+      );
+    }
+  }
+
   Departure? get _primaryDeparture {
     final departures = _snapshot?.departures;
     if (departures == null || departures.isEmpty) return null;
@@ -537,7 +573,12 @@ class _HomeScreenState extends State<HomeScreen> {
           refreshIntervalSeconds: _refreshIntervalSeconds,
           nearbyRadiusMeters: _nearbyRadiusMeters,
           favoritesCount: _favorites.length,
+          pushNotificationsAvailable: widget.pushNotifications.available,
+          pushNotificationsEnabled: widget.pushNotifications.enabled,
+          pushNotificationsBusy: widget.pushNotifications.busy,
+          pushNotificationToken: widget.pushNotifications.token,
           onDarkModeChanged: widget.onDarkModeChanged,
+          onPushNotificationsChanged: _setPushNotifications,
           onAutoRefreshChanged: (value) =>
               _updateSettings(autoRefresh: value),
           onRefreshIntervalChanged: (value) =>
@@ -1569,7 +1610,12 @@ class _SettingsTab extends StatelessWidget {
     required this.refreshIntervalSeconds,
     required this.nearbyRadiusMeters,
     required this.favoritesCount,
+    required this.pushNotificationsAvailable,
+    required this.pushNotificationsEnabled,
+    required this.pushNotificationsBusy,
+    required this.pushNotificationToken,
     required this.onDarkModeChanged,
+    required this.onPushNotificationsChanged,
     required this.onAutoRefreshChanged,
     required this.onRefreshIntervalChanged,
     required this.onNearbyRadiusChanged,
@@ -1581,7 +1627,12 @@ class _SettingsTab extends StatelessWidget {
   final int refreshIntervalSeconds;
   final int nearbyRadiusMeters;
   final int favoritesCount;
+  final bool pushNotificationsAvailable;
+  final bool pushNotificationsEnabled;
+  final bool pushNotificationsBusy;
+  final String? pushNotificationToken;
   final ValueChanged<bool> onDarkModeChanged;
+  final ValueChanged<bool> onPushNotificationsChanged;
   final ValueChanged<bool> onAutoRefreshChanged;
   final ValueChanged<int> onRefreshIntervalChanged;
   final ValueChanged<int> onNearbyRadiusChanged;
@@ -1680,20 +1731,58 @@ class _SettingsTab extends StatelessWidget {
                 onTap: favoritesCount > 0 ? onClearFavorites : null,
               ),
               const SizedBox(height: 12),
-              ListTile(
+              SwitchListTile(
+                value: pushNotificationsEnabled,
+                onChanged: pushNotificationsAvailable &&
+                        !pushNotificationsBusy
+                    ? onPushNotificationsChanged
+                    : null,
                 tileColor: Theme.of(context).colorScheme.surface,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(18),
                 ),
-                leading: const Icon(
+                secondary: const Icon(
                   Icons.notifications_active_outlined,
                   color: _cyan,
                 ),
                 title: const Text('Notifications push'),
-                subtitle: const Text(
-                  'Configuration Firebase requise avant activation sur Android et iPhone.',
+                subtitle: Text(
+                  pushNotificationsBusy
+                      ? 'Activation en cours…'
+                      : pushNotificationsAvailable
+                          ? 'Alertes reçues via Firebase sur cet appareil Android.'
+                          : 'Disponible actuellement dans la version Android.',
                 ),
               ),
+              if (pushNotificationsEnabled && pushNotificationToken != null) ...[
+                const SizedBox(height: 8),
+                ListTile(
+                  tileColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  leading: const Icon(Icons.key_rounded, color: _cyan),
+                  title: const Text('Identifiant de test Firebase'),
+                  subtitle: Text(
+                    '${pushNotificationToken!.substring(0, 18)}…',
+                  ),
+                  trailing: IconButton(
+                    tooltip: 'Copier l’identifiant',
+                    icon: const Icon(Icons.copy_rounded),
+                    onPressed: () async {
+                      await Clipboard.setData(
+                        ClipboardData(text: pushNotificationToken!),
+                      );
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Identifiant Firebase copié.'),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               ListTile(
                 tileColor: Theme.of(context).colorScheme.surface,

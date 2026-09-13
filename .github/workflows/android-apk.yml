@@ -20,6 +20,17 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Configurer Firebase Android
+        shell: bash
+        env:
+          FIREBASE_ANDROID_CONFIG: ${{ secrets.FIREBASE_ANDROID_CONFIG }}
+        run: |
+          if [ -z "$FIREBASE_ANDROID_CONFIG" ]; then
+            echo "Le secret FIREBASE_ANDROID_CONFIG est absent."
+            exit 1
+          fi
+          printf '%s' "$FIREBASE_ANDROID_CONFIG" > android/app/google-services.json
+
       - name: Installer les dépendances
         run: flutter pub get
 
