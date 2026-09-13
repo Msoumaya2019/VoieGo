@@ -21,6 +21,7 @@ export default {
       '/api/v1/snapshot',
       '/api/v1/nearby',
       '/api/v1/journeys',
+      '/api/v1/places',
     ]);
     if (!supportedRoutes.has(url.pathname)) {
       return json({ error: 'Route inconnue.' }, 404, cors);
@@ -49,6 +50,14 @@ export default {
     if (url.pathname === '/api/v1/journeys') {
       try {
         return await journeysResponse(url, env, cors);
+      } catch (error) {
+        return proxyErrorResponse(error, cors);
+      }
+    }
+
+    if (url.pathname === '/api/v1/places') {
+      try {
+        return await placesResponse(url, env, cors);
       } catch (error) {
         return proxyErrorResponse(error, cors);
       }
@@ -233,9 +242,15 @@ async function journeysResponse(url, env, cors) {
   }
 
   const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
+  const fromId = validPlaceId(url.searchParams.get('fromId'))
+    ? url.searchParams.get('fromId')
+    : null;
+  const toId = validPlaceId(url.searchParams.get('toId'))
+    ? url.searchParams.get('toId')
+    : null;
   const [from, to] = await Promise.all([
-    resolvePlace(base, env.PRIM_API_KEY, fromQuery),
-    resolvePlace(base, env.PRIM_API_KEY, toQuery),
+    fromId ? Promise.resolve({ id: fromId, name: fromQuery }) : resolvePlace(base, env.PRIM_API_KEY, fromQuery),
+    toId ? Promise.resolve({ id: toId, name: toQuery }) : resolvePlace(base, env.PRIM_API_KEY, toQuery),
   ]);
   const params = new URLSearchParams({
     from: from.id,
@@ -243,6 +258,8 @@ async function journeysResponse(url, env, cors) {
     count: '3',
     datetime_represents: 'departure',
   });
+  const datetime = url.searchParams.get('datetime');
+  if (datetime && /^\d{8}T\d{6}$/.test(datetime)) params.set('datetime', datetime);
   params.append('first_section_mode[]', 'walking');
   params.append('last_section_mode[]', 'walking');
   const payload = await primFetch(`${base}/journeys?${params}`, env.PRIM_API_KEY);
@@ -255,6 +272,46 @@ async function journeysResponse(url, env, cors) {
     200,
     { ...cors, 'Cache-Control': 'public, max-age=30' },
   );
+}
+
+async function placesResponse(url, env, cors) {
+  const query = (url.searchParams.get('q') || '').trim();
+  if (query.length < 3 || query.length > 120) {
+    return json({ error: 'Saisissez au moins trois caractères.' }, 400, cors);
+  }
+  const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
+  const params = new URLSearchParams({ q: query, count: '7' });
+  params.append('type[]', 'address');
+  params.append('type[]', 'stop_area');
+  const payload = await primFetch(`${base}/places?${params}`, env.PRIM_API_KEY);
+  const places = (Array.isArray(payload.places) ? payload.places : [])
+    .filter((place) => place.id && (place.address || place.stop_area))
+    .slice(0, 7)
+    .map(normalizePlaceSuggestion);
+  return json({ source: 'prim-navitia', places }, 200, {
+    ...cors,
+    'Cache-Control': 'public, max-age=300',
+  });
+}
+
+function normalizePlaceSuggestion(place) {
+  const region = place.administrative_region ||
+    place.address?.administrative_regions?.find((item) => item.level === 8) ||
+    place.stop_area?.administrative_regions?.find((item) => item.level === 8);
+  const city = region?.name || '';
+  const postcode = region?.zip_code || '';
+  const detail = [postcode, city].filter(Boolean).join(' ');
+  const name = place.name || place.address?.name || place.stop_area?.name || '';
+  return {
+    id: place.id,
+    name,
+    label: detail && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${detail}` : name,
+    type: place.stop_area ? 'stop_area' : 'address',
+  };
+}
+
+function validPlaceId(value) {
+  return typeof value === 'string' && value.length <= 200 && /^[A-Za-z0-9_:;.,-]+$/.test(value);
 }
 
 async function resolvePlace(base, apiKey, query) {

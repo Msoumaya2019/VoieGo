@@ -128,6 +128,29 @@ class TransitJourney {
   int get durationMinutes => (durationSeconds / 60).ceil();
 }
 
+class PlaceSuggestion {
+  const PlaceSuggestion({
+    required this.id,
+    required this.name,
+    required this.label,
+    required this.type,
+  });
+
+  factory PlaceSuggestion.fromJson(Map<String, dynamic> json) {
+    return PlaceSuggestion(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      label: json['label'] as String? ?? json['name'] as String? ?? '',
+      type: json['type'] as String? ?? 'address',
+    );
+  }
+
+  final String id;
+  final String name;
+  final String label;
+  final String type;
+}
+
 class JourneySection {
   const JourneySection({
     required this.type,

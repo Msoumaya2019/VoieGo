@@ -169,6 +169,9 @@ class TransitRepository {
   Future<List<TransitJourney>> fetchJourneys({
     required String from,
     required String to,
+    String? fromId,
+    String? toId,
+    DateTime? departureAt,
   }) async {
     if (config.demoMode) {
       final now = DateTime.now();
@@ -203,7 +206,13 @@ class TransitRepository {
     }
     final uri = Uri.parse(config.apiBaseUrl)
         .resolve('/api/v1/journeys')
-        .replace(queryParameters: {'from': from, 'to': to});
+        .replace(queryParameters: {
+          'from': from,
+          'to': to,
+          if (fromId != null) 'fromId': fromId,
+          if (toId != null) 'toId': toId,
+          if (departureAt != null) 'datetime': _navitiaDate(departureAt),
+        });
     final response = await _get(uri, 'Impossible de calculer cet itinéraire.');
     final journeys = (response['journeys'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
@@ -215,6 +224,37 @@ class TransitRepository {
       );
     }
     return journeys;
+  }
+
+  Future<List<PlaceSuggestion>> fetchPlaceSuggestions(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.length < 3) return const [];
+    if (config.demoMode) {
+      return [
+        PlaceSuggestion(
+          id: 'demo:$trimmed',
+          name: trimmed,
+          label: '$trimmed, Île-de-France',
+          type: 'address',
+        ),
+      ];
+    }
+    final uri = Uri.parse(config.apiBaseUrl)
+        .resolve('/api/v1/places')
+        .replace(queryParameters: {'q': trimmed});
+    final response = await _get(uri, 'Impossible de rechercher cette adresse.');
+    return (response['places'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(PlaceSuggestion.fromJson)
+        .where((place) => place.id.isNotEmpty && place.label.isNotEmpty)
+        .toList();
+  }
+
+  String _navitiaDate(DateTime value) {
+    final local = value.toLocal();
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${local.year}${two(local.month)}${two(local.day)}T'
+        '${two(local.hour)}${two(local.minute)}${two(local.second)}';
   }
 
   Future<Map<String, dynamic>> _get(Uri uri, String fallbackMessage) async {

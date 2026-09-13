@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1624,8 +1625,12 @@ class _ItineraryTab extends StatefulWidget {
 class _ItineraryTabState extends State<_ItineraryTab> {
   final _fromController = TextEditingController();
   final _toController = TextEditingController();
+  PlaceSuggestion? _fromPlace;
+  PlaceSuggestion? _toPlace;
   List<TransitJourney> _journeys = const [];
   bool _loading = false;
+  bool _departNow = true;
+  DateTime _departureAt = DateTime.now().add(const Duration(minutes: 15));
   String? _error;
 
   @override
@@ -1649,7 +1654,13 @@ class _ItineraryTabState extends State<_ItineraryTab> {
       _journeys = const [];
     });
     try {
-      final journeys = await widget.repository.fetchJourneys(from: from, to: to);
+      final journeys = await widget.repository.fetchJourneys(
+        from: from,
+        to: to,
+        fromId: _fromPlace?.id,
+        toId: _toPlace?.id,
+        departureAt: _departNow ? null : _departureAt,
+      );
       if (!mounted) return;
       setState(() => _journeys = journeys);
     } on TransitException catch (error) {
@@ -1663,6 +1674,75 @@ class _ItineraryTabState extends State<_ItineraryTab> {
     final from = _fromController.text;
     _fromController.text = _toController.text;
     _toController.text = from;
+    final fromPlace = _fromPlace;
+    setState(() {
+      _fromPlace = _toPlace;
+      _toPlace = fromPlace;
+    });
+  }
+
+  String _departureLabel(DateTime value) {
+    const months = [
+      'janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin',
+      'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.',
+    ];
+    final time = '${value.hour.toString().padLeft(2, '0')}:'
+        '${value.minute.toString().padLeft(2, '0')}';
+    return '${value.day} ${months[value.month - 1]} à $time';
+  }
+
+  Future<void> _pickDeparture() async {
+    var selected = _departureAt.isAfter(DateTime.now())
+        ? _departureAt
+        : DateTime.now().add(const Duration(minutes: 5));
+    final result = await showModalBottomSheet<DateTime>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: SizedBox(
+          height: 350,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 0, 10, 4),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Choisir le départ',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, selected),
+                      child: const Text('Valider'),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: CupertinoDatePicker(
+                  mode: CupertinoDatePickerMode.dateAndTime,
+                  initialDateTime: selected,
+                  minimumDate: DateTime.now().subtract(const Duration(minutes: 1)),
+                  maximumDate: DateTime.now().add(const Duration(days: 30)),
+                  minuteInterval: 5,
+                  use24hFormat: true,
+                  onDateTimeChanged: (value) => selected = value,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (result != null && mounted) {
+      setState(() {
+        _departNow = false;
+        _departureAt = result;
+      });
+    }
   }
 
   @override
@@ -1680,14 +1760,14 @@ class _ItineraryTabState extends State<_ItineraryTab> {
                 subtitle: 'Calculez votre trajet en transports en commun',
               ),
               const SizedBox(height: 22),
-              TextField(
+              _AddressAutocompleteField(
                 controller: _fromController,
+                repository: widget.repository,
                 textInputAction: TextInputAction.next,
-                decoration: _selectorDecoration(
-                  context,
-                  label: 'Adresse de départ',
-                  icon: Icons.trip_origin_rounded,
-                ),
+                label: 'Adresse de départ',
+                icon: Icons.trip_origin_rounded,
+                onChanged: () => _fromPlace = null,
+                onSelected: (place) => setState(() => _fromPlace = place),
               ),
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
@@ -1699,16 +1779,62 @@ class _ItineraryTabState extends State<_ItineraryTab> {
                   ),
                 ),
               ),
-              TextField(
+              _AddressAutocompleteField(
                 controller: _toController,
+                repository: widget.repository,
                 textInputAction: TextInputAction.search,
                 onSubmitted: (_) => _search(),
-                decoration: _selectorDecoration(
-                  context,
-                  label: 'Adresse d’arrivée',
-                  icon: Icons.location_on_rounded,
+                label: 'Adresse d’arrivée',
+                icon: Icons.location_on_rounded,
+                onChanged: () => _toPlace = null,
+                onSelected: (place) => setState(() => _toPlace = place),
+              ),
+              const SizedBox(height: 14),
+              SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.bolt_rounded),
+                    label: Text('Maintenant'),
+                  ),
+                  ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.schedule_rounded),
+                    label: Text('Plus tard'),
+                  ),
+                ],
+                selected: {_departNow},
+                onSelectionChanged: (selection) async {
+                  final now = selection.first;
+                  if (now) {
+                    setState(() => _departNow = true);
+                  } else {
+                    await _pickDeparture();
+                  }
+                },
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity(vertical: 1),
                 ),
               ),
+              if (!_departNow) ...[
+                const SizedBox(height: 10),
+                Material(
+                  color: Theme.of(context).colorScheme.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  child: ListTile(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      side: BorderSide(color: Theme.of(context).colorScheme.outline),
+                    ),
+                    leading: const Icon(Icons.calendar_month_rounded, color: _cyan),
+                    title: const Text('Départ programmé'),
+                    subtitle: Text(_departureLabel(_departureAt)),
+                    trailing: const Icon(Icons.tune_rounded),
+                    onTap: _pickDeparture,
+                  ),
+                ),
+              ],
               const SizedBox(height: 14),
               FilledButton.icon(
                 onPressed: _loading ? null : _search,
@@ -1742,6 +1868,146 @@ class _ItineraryTabState extends State<_ItineraryTab> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _AddressAutocompleteField extends StatefulWidget {
+  const _AddressAutocompleteField({
+    required this.controller,
+    required this.repository,
+    required this.label,
+    required this.icon,
+    required this.onChanged,
+    required this.onSelected,
+    this.textInputAction,
+    this.onSubmitted,
+  });
+
+  final TextEditingController controller;
+  final TransitRepository repository;
+  final String label;
+  final IconData icon;
+  final VoidCallback onChanged;
+  final ValueChanged<PlaceSuggestion> onSelected;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
+
+  @override
+  State<_AddressAutocompleteField> createState() => _AddressAutocompleteFieldState();
+}
+
+class _AddressAutocompleteFieldState extends State<_AddressAutocompleteField> {
+  Timer? _debounce;
+  List<PlaceSuggestion> _suggestions = const [];
+  bool _loading = false;
+  int _requestId = 0;
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  void _onChanged(String value) {
+    widget.onChanged();
+    _debounce?.cancel();
+    final query = value.trim();
+    if (query.length < 3) {
+      setState(() {
+        _suggestions = const [];
+        _loading = false;
+      });
+      return;
+    }
+    setState(() => _loading = true);
+    final requestId = ++_requestId;
+    _debounce = Timer(const Duration(milliseconds: 350), () async {
+      try {
+        final suggestions = await widget.repository.fetchPlaceSuggestions(query);
+        if (!mounted || requestId != _requestId) return;
+        setState(() {
+          _suggestions = suggestions;
+          _loading = false;
+        });
+      } catch (_) {
+        if (!mounted || requestId != _requestId) return;
+        setState(() {
+          _suggestions = const [];
+          _loading = false;
+        });
+      }
+    });
+  }
+
+  void _select(PlaceSuggestion place) {
+    _debounce?.cancel();
+    widget.controller.text = place.label;
+    widget.controller.selection = TextSelection.collapsed(offset: place.label.length);
+    widget.onSelected(place);
+    setState(() => _suggestions = const []);
+    FocusScope.of(context).unfocus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        TextField(
+          controller: widget.controller,
+          textInputAction: widget.textInputAction,
+          onSubmitted: widget.onSubmitted,
+          onChanged: _onChanged,
+          autocorrect: false,
+          decoration: _selectorDecoration(
+            context,
+            label: widget.label,
+            icon: widget.icon,
+          ).copyWith(
+            suffixIcon: _loading
+                ? const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : null,
+          ),
+        ),
+        if (_suggestions.isNotEmpty)
+          Container(
+            margin: const EdgeInsets.only(top: 6),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: Theme.of(context).colorScheme.outline),
+              boxShadow: const [
+                BoxShadow(color: Color(0x24000000), blurRadius: 18, offset: Offset(0, 8)),
+              ],
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: _suggestions.map((place) {
+                final isStop = place.type == 'stop_area';
+                return ListTile(
+                  dense: true,
+                  leading: Icon(
+                    isStop ? Icons.directions_transit_rounded : Icons.location_on_outlined,
+                    color: _cyan,
+                  ),
+                  title: Text(
+                    place.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: place.label == place.name
+                      ? null
+                      : Text(place.label, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () => _select(place),
+                );
+              }).toList(),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -2026,7 +2292,7 @@ class _SettingsTab extends StatelessWidget {
                   borderRadius: BorderRadius.circular(18),
                 ),
                 leading: const Icon(Icons.info_outline_rounded, color: _cyan),
-                title: const Text('VoieGo 1.1.0'),
+                title: const Text('VoieGo 1.2.0'),
                 subtitle: const Text(
                   'Données : Île-de-France Mobilités / PRIM',
                 ),
