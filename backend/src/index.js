@@ -22,6 +22,7 @@ export default {
       '/api/v1/nearby',
       '/api/v1/journeys',
       '/api/v1/places',
+      '/api/v1/traffic',
     ]);
     if (!supportedRoutes.has(url.pathname)) {
       return json({ error: 'Route inconnue.' }, 404, cors);
@@ -58,6 +59,27 @@ export default {
     if (url.pathname === '/api/v1/places') {
       try {
         return await placesResponse(url, env, cors);
+      } catch (error) {
+        return proxyErrorResponse(error, cors);
+      }
+    }
+
+    if (url.pathname === '/api/v1/traffic') {
+      const lineRef = url.searchParams.get('lineRef');
+      if (!/^STIF:Line::C\d+:$/.test(lineRef ?? '')) {
+        return json({ error: 'lineRef invalide.' }, 400, cors);
+      }
+      try {
+        const alert = await fetchTrafficAlert(env, toNavitiaLineId(lineRef));
+        return json(
+          {
+            source: 'prim-navitia',
+            status: alert ? 'disrupted' : 'normal',
+            alert,
+          },
+          200,
+          { ...cors, 'Cache-Control': 'public, max-age=60' },
+        );
       } catch (error) {
         return proxyErrorResponse(error, cors);
       }
@@ -211,20 +233,33 @@ async function nearbyResponse(url, request, env, context, cors) {
   if (cached) return withCors(cached, cors);
 
   const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
-  const params = new URLSearchParams({ distance: `${radius}`, count: '50' });
+  const params = new URLSearchParams({ distance: `${radius}`, count: '12' });
   params.append('type[]', 'stop_area');
   const coord = `${location.lon};${location.lat}`;
   const payload = await primFetch(
     `${base}/coords/${coord}/places_nearby?${params}`,
     env.PRIM_API_KEY,
   );
-  const stops = (Array.isArray(payload.places_nearby) ? payload.places_nearby : [])
+  const nearbyPlaces = (Array.isArray(payload.places_nearby) ? payload.places_nearby : [])
     .filter((place) => place.stop_area?.id)
-    .map((place) => ({
-      id: place.stop_area.id,
-      name: place.stop_area.name || 'Arrêt sans nom',
+    .slice(0, 12);
+  const stops = await Promise.all(nearbyPlaces.map(async (place) => {
+    const stop = place.stop_area;
+    let departures = [];
+    try {
+      departures = await nextStopDepartures(base, env.PRIM_API_KEY, stop.id);
+    } catch (_) {
+      // L’arrêt reste visible même si ses prochains passages sont indisponibles.
+    }
+    return {
+      id: stop.id,
+      name: stop.name || 'Arrêt sans nom',
       distanceMeters: Number(place.distance || 0),
-    }));
+      latitude: Number(stop.coord?.lat),
+      longitude: Number(stop.coord?.lon),
+      departures,
+    };
+  }));
   const response = json(
     { source: 'prim-navitia', radiusMeters: radius, stops },
     200,
@@ -232,6 +267,29 @@ async function nearbyResponse(url, request, env, context, cors) {
   );
   context.waitUntil(cache.put(cacheKey, response.clone()));
   return response;
+}
+
+async function nextStopDepartures(base, apiKey, stopId) {
+  const payload = await primFetch(
+    `${base}/stop_areas/${encodeURIComponent(stopId)}/departures?data_freshness=realtime&count=12`,
+    apiKey,
+  );
+  return (Array.isArray(payload.departures) ? payload.departures : [])
+    .map((item) => {
+      const date = item.stop_date_time?.departure_date_time ||
+        item.stop_date_time?.arrival_date_time;
+      if (!date) return null;
+      return {
+        line: item.display_informations?.code || '?',
+        mode: item.display_informations?.commercial_mode || 'Transport',
+        destination: item.display_informations?.direction || 'Destination inconnue',
+        expectedAt: navitiaDateToIso(date),
+        realtime: item.stop_date_time?.data_freshness === 'realtime',
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.expectedAt.localeCompare(b.expectedAt))
+    .slice(0, 2);
 }
 
 async function journeysResponse(url, env, cors) {
@@ -334,6 +392,7 @@ export function normalizeJourney(journey) {
     arrivalAt: navitiaDateToIso(journey.arrival_date_time),
     durationSeconds: Number(journey.duration || 0),
     transfers: Number(journey.nb_transfers || 0),
+    recommendedExit: findRecommendedExit(journey.sections),
     sections: (Array.isArray(journey.sections) ? journey.sections : [])
       .filter((section) => !['waiting', 'boarding', 'landing'].includes(section.type))
       .map((section) => ({
@@ -352,6 +411,22 @@ export function normalizeJourney(journey) {
         durationSeconds: Number(section.duration || 0),
       })),
   };
+}
+
+function findRecommendedExit(sections) {
+  const values = Array.isArray(sections) ? sections : [];
+  for (const section of [...values].reverse()) {
+    const vias = Array.isArray(section.vias) ? section.vias : [];
+    for (const via of vias) {
+      const access = via.access_point || via;
+      if (access.is_exit === false) continue;
+      const name = access.signposted_as || access.name;
+      const code = access.access_point_code;
+      if (name && code && !name.includes(code)) return `${code} — ${name}`;
+      if (name || code) return name || code;
+    }
+  }
+  return null;
 }
 
 async function stopsResponse(url, request, env, context, cors, lineId) {
@@ -478,22 +553,27 @@ async function referenceStop(base, apiKey, lineId) {
 
 async function trafficAlert(env, lineId) {
   try {
-    const base = env.PRIM_TRAFFIC_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia/line_reports';
-    const filter = encodeURIComponent(`line.id=${lineId}`);
-    const payload = await primFetch(
-      `${base}?count=20&filter=${filter}`,
-      env.PRIM_API_KEY,
-    );
-    const disruption = (payload.disruptions || []).find((item) => item.status !== 'past');
-    if (!disruption) return null;
-    const message = (disruption.messages || []).find((item) => item.channel?.content_type === 'text/plain')?.text;
-    return {
-      title: disruption.severity?.name || 'Information trafic',
-      message: message || disruption.cause || 'Une perturbation est signalée sur cette ligne.',
-    };
+    return await fetchTrafficAlert(env, lineId);
   } catch (_) {
     return null;
   }
+}
+
+async function fetchTrafficAlert(env, lineId) {
+  const base = env.PRIM_TRAFFIC_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia/line_reports';
+  const filter = encodeURIComponent(`line.id=${lineId}`);
+  const payload = await primFetch(
+    `${base}?count=20&filter=${filter}`,
+    env.PRIM_API_KEY,
+  );
+  const disruption = (payload.disruptions || []).find((item) => item.status !== 'past');
+  if (!disruption) return null;
+  const message = (disruption.messages || [])
+    .find((item) => item.channel?.content_type === 'text/plain')?.text;
+  return {
+    title: disruption.severity?.name || 'Information trafic',
+    message: message || disruption.cause || 'Une perturbation est signalée sur cette ligne.',
+  };
 }
 
 async function primFetch(url, apiKey) {

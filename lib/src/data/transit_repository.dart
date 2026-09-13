@@ -116,6 +116,20 @@ class TransitRepository {
     return stops;
   }
 
+  Future<LineTrafficStatus> fetchTrafficStatus(TransitLine line) async {
+    if (config.demoMode) {
+      return const LineTrafficStatus(isNormal: true);
+    }
+    final uri = Uri.parse(config.apiBaseUrl)
+        .resolve('/api/v1/traffic')
+        .replace(queryParameters: {'lineRef': line.lineRef});
+    final response = await _get(
+      uri,
+      'Impossible de charger l’état du trafic.',
+    );
+    return LineTrafficStatus.fromJson(response);
+  }
+
   Future<List<TransitDirection>> fetchDirections(
     TransitLine line,
     TransitStop stop,

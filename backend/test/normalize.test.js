@@ -46,8 +46,14 @@ test('keeps exact departure and arrival times for every journey section', () => 
       from: { name: 'Gare de départ' },
       to: { name: 'Gare d’arrivée' },
       duration: 1140,
+      vias: [{
+        access_point_code: '3',
+        signposted_as: 'Rue de Rivoli',
+        is_exit: true,
+      }],
     }],
   });
   assert.match(journey.sections[0].departureAt, /T17:52:00/);
   assert.match(journey.sections[0].arrivalAt, /T18:11:00/);
+  assert.equal(journey.recommendedExit, '3 — Rue de Rivoli');
 });

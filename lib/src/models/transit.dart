@@ -82,6 +82,9 @@ class NearbyStop {
     required this.id,
     required this.name,
     required this.distanceMeters,
+    required this.latitude,
+    required this.longitude,
+    required this.departures,
   });
 
   factory NearbyStop.fromJson(Map<String, dynamic> json) {
@@ -89,12 +92,52 @@ class NearbyStop {
       id: json['id'] as String? ?? '',
       name: json['name'] as String? ?? 'Arrêt sans nom',
       distanceMeters: (json['distanceMeters'] as num?)?.toInt() ?? 0,
+      latitude: (json['latitude'] as num?)?.toDouble(),
+      longitude: (json['longitude'] as num?)?.toDouble(),
+      departures: (json['departures'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(NearbyDeparture.fromJson)
+          .toList(),
     );
   }
 
   final String id;
   final String name;
   final int distanceMeters;
+  final double? latitude;
+  final double? longitude;
+  final List<NearbyDeparture> departures;
+}
+
+class NearbyDeparture {
+  const NearbyDeparture({
+    required this.line,
+    required this.mode,
+    required this.destination,
+    required this.expectedAt,
+    required this.realtime,
+  });
+
+  factory NearbyDeparture.fromJson(Map<String, dynamic> json) {
+    return NearbyDeparture(
+      line: json['line'] as String? ?? '?',
+      mode: json['mode'] as String? ?? 'Transport',
+      destination: json['destination'] as String? ?? 'Destination inconnue',
+      expectedAt: DateTime.parse(json['expectedAt'] as String).toLocal(),
+      realtime: json['realtime'] as bool? ?? false,
+    );
+  }
+
+  final String line;
+  final String mode;
+  final String destination;
+  final DateTime expectedAt;
+  final bool realtime;
+
+  int minutesFrom(DateTime now) {
+    final value = expectedAt.difference(now).inMinutes;
+    return value < 0 ? 0 : value;
+  }
 }
 
 class TransitJourney {
@@ -104,6 +147,7 @@ class TransitJourney {
     required this.durationSeconds,
     required this.transfers,
     required this.sections,
+    this.recommendedExit,
   });
 
   factory TransitJourney.fromJson(Map<String, dynamic> json) {
@@ -116,6 +160,7 @@ class TransitJourney {
           .whereType<Map<String, dynamic>>()
           .map(JourneySection.fromJson)
           .toList(),
+      recommendedExit: json['recommendedExit'] as String?,
     );
   }
 
@@ -124,8 +169,25 @@ class TransitJourney {
   final int durationSeconds;
   final int transfers;
   final List<JourneySection> sections;
+  final String? recommendedExit;
 
   int get durationMinutes => (durationSeconds / 60).ceil();
+}
+
+class LineTrafficStatus {
+  const LineTrafficStatus({required this.isNormal, this.alert});
+
+  factory LineTrafficStatus.fromJson(Map<String, dynamic> json) {
+    return LineTrafficStatus(
+      isNormal: json['status'] == 'normal',
+      alert: json['alert'] is Map<String, dynamic>
+          ? TrafficAlert.fromJson(json['alert'] as Map<String, dynamic>)
+          : null,
+    );
+  }
+
+  final bool isNormal;
+  final TrafficAlert? alert;
 }
 
 class PlaceSuggestion {

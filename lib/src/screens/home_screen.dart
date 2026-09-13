@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../data/transit_repository.dart';
 import '../models/transit.dart';
@@ -47,6 +49,8 @@ class _HomeScreenState extends State<HomeScreen> {
   TransitStop? _stop;
   TransitDirection? _direction;
   TransitSnapshot? _snapshot;
+  LineTrafficStatus? _lineTraffic;
+  bool _lineTrafficLoading = true;
   bool _loading = true;
   String? _error;
   String _lineQuery = '';
@@ -200,6 +204,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _direction = null;
       });
     }
+    unawaited(_loadLineTraffic());
     try {
       final stops = await widget.repository.fetchStops(_line);
       final stop = stops.first;
@@ -217,6 +222,30 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _loading = false;
         _error = error.message;
+      });
+    }
+  }
+
+  Future<void> _loadLineTraffic() async {
+    final requestedLineRef = _line.lineRef;
+    if (mounted) {
+      setState(() {
+        _lineTrafficLoading = true;
+        _lineTraffic = null;
+      });
+    }
+    try {
+      final status = await widget.repository.fetchTrafficStatus(_line);
+      if (!mounted || _line.lineRef != requestedLineRef) return;
+      setState(() {
+        _lineTraffic = status;
+        _lineTrafficLoading = false;
+      });
+    } on TransitException {
+      if (!mounted || _line.lineRef != requestedLineRef) return;
+      setState(() {
+        _lineTraffic = null;
+        _lineTrafficLoading = false;
       });
     }
   }
@@ -355,6 +384,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _lineQuery = '';
       _lineSearchController.clear();
     });
+    unawaited(_loadLineTraffic());
     try {
       final results = await Future.wait([
         widget.repository.fetchLines(favorite.line.mode),
@@ -515,6 +545,15 @@ class _HomeScreenState extends State<HomeScreen> {
                             lines: lineChoices,
                             selected: _line,
                             onSelected: _selectLine,
+                          ),
+                          const SizedBox(height: 12),
+                          _LineTrafficCard(
+                            line: _line,
+                            status: _lineTraffic,
+                            loading: _lineTrafficLoading,
+                            onTap: _lineTraffic?.alert == null
+                                ? null
+                                : () => _showTraffic(_lineTraffic!.alert!),
                           ),
                           const SizedBox(height: 24),
                           const _StepTitle(
@@ -1393,6 +1432,89 @@ class _AlertCard extends StatelessWidget {
   }
 }
 
+class _LineTrafficCard extends StatelessWidget {
+  const _LineTrafficCard({
+    required this.line,
+    required this.status,
+    required this.loading,
+    required this.onTap,
+  });
+
+  final TransitLine line;
+  final LineTrafficStatus? status;
+  final bool loading;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final disrupted = status?.alert != null;
+    final color = disrupted ? const Color(0xFFFF8B3D) : _green;
+    final title = loading
+        ? 'Vérification du trafic…'
+        : status == null
+        ? 'État du trafic indisponible'
+        : disrupted
+        ? status!.alert!.title
+        : 'Trafic normal sur la ligne ${line.code}';
+    final subtitle = loading
+        ? 'Consultation des informations PRIM'
+        : status == null
+        ? 'Les horaires restent accessibles.'
+        : disrupted
+        ? status!.alert!.message
+        : 'Aucune perturbation en cours signalée par Île-de-France Mobilités.';
+    return Material(
+      color: color.withValues(alpha: 0.1),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              if (loading)
+                const SizedBox.square(
+                  dimension: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Icon(
+                  disrupted
+                      ? Icons.warning_amber_rounded
+                      : status == null
+                      ? Icons.cloud_off_rounded
+                      : Icons.check_circle_rounded,
+                  color: color,
+                ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      maxLines: disrupted ? 2 : 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (onTap != null) const Icon(Icons.chevron_right_rounded),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _FavoritesTab extends StatelessWidget {
   const _FavoritesTab({
     required this.favorites,
@@ -1575,39 +1697,138 @@ class _NearbyTab extends StatelessWidget {
               if (stops.isNotEmpty) ...[
                 const SizedBox(height: 20),
                 ...stops.map(
-                  (stop) => ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 4,
-                    ),
-                    tileColor: Theme.of(context).colorScheme.surface,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    leading: CircleAvatar(
-                      backgroundColor:
-                          Theme.of(context).colorScheme.surfaceContainerHigh,
-                      child: const Icon(
-                        Icons.directions_transit_rounded,
-                        color: _cyan,
-                      ),
-                    ),
-                    title: Text(
-                      stop.name,
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    trailing: Text(
-                      stop.distanceMeters < 1000
-                          ? '${stop.distanceMeters} m'
-                          : '${(stop.distanceMeters / 1000).toStringAsFixed(1)} km',
-                      style: const TextStyle(color: _cyan),
-                    ),
+                  (stop) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _NearbyStopCard(stop: stop),
                   ),
                 ),
               ],
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _NearbyStopCard extends StatelessWidget {
+  const _NearbyStopCard({required this.stop});
+
+  final NearbyStop stop;
+
+  String _time(DateTime value) =>
+      '${value.hour.toString().padLeft(2, '0')}h${value.minute.toString().padLeft(2, '0')}';
+
+  Future<void> _openWalkingDirections(BuildContext context) async {
+    final latitude = stop.latitude;
+    final longitude = stop.longitude;
+    if (latitude == null || longitude == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Coordonnées de cet arrêt indisponibles.')),
+      );
+      return;
+    }
+    final uri = Platform.isIOS
+        ? Uri.parse(
+            'https://maps.apple.com/?daddr=$latitude,$longitude&dirflg=w',
+          )
+        : Uri.parse(
+            'https://www.google.com/maps/dir/?api=1&destination=$latitude,$longitude&travelmode=walking',
+          );
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Impossible d’ouvrir l’application de navigation.')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const CircleAvatar(
+                backgroundColor: Color(0x225FE3FF),
+                child: Icon(Icons.directions_transit_rounded, color: _cyan),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      stop.name,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                    Text(
+                      '${stop.distanceMeters} m à pied',
+                      style: const TextStyle(color: _cyan, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton.filledTonal(
+                tooltip: 'Y aller à pied',
+                onPressed: () => _openWalkingDirections(context),
+                icon: const Icon(Icons.gps_fixed_rounded),
+              ),
+            ],
+          ),
+          const Divider(height: 24),
+          if (stop.departures.isEmpty)
+            Text(
+              'Prochains passages indisponibles',
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            )
+          else
+            ...stop.departures.map((departure) {
+              final minutes = departure.minutesFrom(now);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 9),
+                child: Row(
+                  children: [
+                    Container(
+                      constraints: const BoxConstraints(minWidth: 38),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: _cyan.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        departure.line,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: _cyan, fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(
+                        'Vers ${departure.destination}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${_time(departure.expectedAt)} · $minutes min',
+                      style: const TextStyle(color: _yellow, fontWeight: FontWeight.w900),
+                    ),
+                  ],
+                ),
+              );
+            }),
+        ],
       ),
     );
   }
@@ -2061,6 +2282,36 @@ class _JourneyCard extends StatelessWidget {
                 : '${journey.transfers} correspondance${journey.transfers > 1 ? 's' : ''}',
             style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
+          if (journey.recommendedExit case final exit?) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _green.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.exit_to_app_rounded, color: _green),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(
+                        children: [
+                          const TextSpan(
+                            text: 'Sortie conseillée · ',
+                            style: TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                          TextSpan(text: exit),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const Divider(height: 24),
           ...journey.sections.map((section) {
             final isTransit = section.type == 'public_transport';
@@ -2332,7 +2583,7 @@ class _SettingsTab extends StatelessWidget {
                   borderRadius: BorderRadius.circular(18),
                 ),
                 leading: const Icon(Icons.info_outline_rounded, color: _cyan),
-                title: const Text('VoieGo 1.3.0'),
+                title: const Text('VoieGo 1.4.0'),
                 subtitle: const Text(
                   'Données : Île-de-France Mobilités / PRIM',
                 ),
