@@ -185,6 +185,8 @@ class TransitRepository {
     required String to,
     String? fromId,
     String? toId,
+    String? fromSessionToken,
+    String? toSessionToken,
     DateTime? departureAt,
   }) async {
     if (config.demoMode) {
@@ -225,6 +227,8 @@ class TransitRepository {
           'to': to,
           'fromId': ?fromId,
           'toId': ?toId,
+          'fromSessionToken': ?fromSessionToken,
+          'toSessionToken': ?toSessionToken,
           if (departureAt != null) 'datetime': _navitiaDate(departureAt),
         });
     final response = await _get(uri, 'Impossible de calculer cet itinéraire.');
@@ -240,7 +244,10 @@ class TransitRepository {
     return journeys;
   }
 
-  Future<List<PlaceSuggestion>> fetchPlaceSuggestions(String query) async {
+  Future<List<PlaceSuggestion>> fetchPlaceSuggestions(
+    String query, {
+    String? sessionToken,
+  }) async {
     final trimmed = query.trim();
     if (trimmed.length < 3) return const [];
     if (config.demoMode) {
@@ -255,7 +262,10 @@ class TransitRepository {
     }
     final uri = Uri.parse(config.apiBaseUrl)
         .resolve('/api/v1/places')
-        .replace(queryParameters: {'q': trimmed});
+        .replace(queryParameters: {
+          'q': trimmed,
+          'sessionToken': ?sessionToken,
+        });
     final response = await _get(uri, 'Impossible de rechercher cette adresse.');
     return (response['places'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()

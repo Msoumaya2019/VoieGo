@@ -1880,6 +1880,8 @@ class _ItineraryTabState extends State<_ItineraryTab> {
         to: to,
         fromId: _fromPlace?.id,
         toId: _toPlace?.id,
+        fromSessionToken: _fromPlace?.sessionToken,
+        toSessionToken: _toPlace?.sessionToken,
         departureAt: _departNow ? null : _departureAt,
       );
       if (!mounted) return;
@@ -2123,6 +2125,16 @@ class _AddressAutocompleteFieldState extends State<_AddressAutocompleteField> {
   List<PlaceSuggestion> _suggestions = const [];
   bool _loading = false;
   int _requestId = 0;
+  late String _sessionToken;
+
+  @override
+  void initState() {
+    super.initState();
+    _sessionToken = _newSessionToken();
+  }
+
+  String _newSessionToken() =>
+      'vg_${DateTime.now().microsecondsSinceEpoch}_${identityHashCode(this)}';
 
   @override
   void dispose() {
@@ -2145,7 +2157,10 @@ class _AddressAutocompleteFieldState extends State<_AddressAutocompleteField> {
     final requestId = ++_requestId;
     _debounce = Timer(const Duration(milliseconds: 350), () async {
       try {
-        final suggestions = await widget.repository.fetchPlaceSuggestions(query);
+        final suggestions = await widget.repository.fetchPlaceSuggestions(
+          query,
+          sessionToken: _sessionToken,
+        );
         if (!mounted || requestId != _requestId) return;
         setState(() {
           _suggestions = suggestions;
@@ -2166,7 +2181,10 @@ class _AddressAutocompleteFieldState extends State<_AddressAutocompleteField> {
     widget.controller.text = place.label;
     widget.controller.selection = TextSelection.collapsed(offset: place.label.length);
     widget.onSelected(place);
-    setState(() => _suggestions = const []);
+    setState(() {
+      _suggestions = const [];
+      _sessionToken = _newSessionToken();
+    });
     FocusScope.of(context).unfocus();
   }
 
@@ -2206,31 +2224,48 @@ class _AddressAutocompleteFieldState extends State<_AddressAutocompleteField> {
             ),
             clipBehavior: Clip.antiAlias,
             child: Column(
-              children: _suggestions.map((place) {
-                final isStop = place.type == 'stop_area';
-                final isPoi = place.type == 'poi';
-                return ListTile(
-                  dense: true,
-                  leading: Icon(
-                    isStop
-                        ? Icons.directions_transit_rounded
-                        : isPoi
-                        ? Icons.place_rounded
-                        : Icons.location_on_outlined,
-                    color: _cyan,
+              children: [
+                ..._suggestions.map((place) {
+                  final isStop = place.type == 'stop_area';
+                  final isPoi = place.type == 'poi';
+                  return ListTile(
+                    dense: true,
+                    leading: Icon(
+                      isStop
+                          ? Icons.directions_transit_rounded
+                          : isPoi
+                          ? Icons.place_rounded
+                          : Icons.location_on_outlined,
+                      color: _cyan,
+                    ),
+                    title: Text(
+                      place.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    subtitle: place.label == place.name
+                        ? null
+                        : Text(
+                            place.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                    onTap: () => _select(place),
+                  );
+                }),
+                if (_suggestions.any((place) => place.provider == 'google'))
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 4, 16, 10),
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        'Résultats Google',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                      ),
+                    ),
                   ),
-                  title: Text(
-                    place.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  subtitle: place.label == place.name
-                      ? null
-                      : Text(place.label, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  onTap: () => _select(place),
-                );
-              }).toList(),
+              ],
             ),
           ),
       ],

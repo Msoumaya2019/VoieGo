@@ -196,6 +196,8 @@ class PlaceSuggestion {
     required this.name,
     required this.label,
     required this.type,
+    this.provider = 'prim',
+    this.sessionToken,
   });
 
   factory PlaceSuggestion.fromJson(Map<String, dynamic> json) {
@@ -204,6 +206,8 @@ class PlaceSuggestion {
       name: json['name'] as String? ?? '',
       label: json['label'] as String? ?? json['name'] as String? ?? '',
       type: json['type'] as String? ?? 'address',
+      provider: json['provider'] as String? ?? 'prim',
+      sessionToken: json['sessionToken'] as String?,
     );
   }
 
@@ -211,6 +215,8 @@ class PlaceSuggestion {
   final String name;
   final String label;
   final String type;
+  final String provider;
+  final String? sessionToken;
 }
 
 class JourneySection {

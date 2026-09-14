@@ -5,11 +5,35 @@ import {
   navitiaDateToIso,
   normalizeDepartures,
   normalizeJourney,
+  normalizeGoogleSuggestions,
   toNavitiaLineId,
 } from '../src/index.js';
 
 test('converts a SIRI line reference to a Navitia line id', () => {
   assert.equal(toNavitiaLineId('STIF:Line::C01740:'), 'line:IDFM:C01740');
+});
+
+test('normalizes Google business suggestions without exposing the API key', () => {
+  const result = normalizeGoogleSuggestions({
+    suggestions: [{
+      placePrediction: {
+        placeId: 'ChIJ-test',
+        text: { text: 'Centre dentaire, Louvres' },
+        structuredFormat: {
+          mainText: { text: 'Centre dentaire' },
+          secondaryText: { text: 'Louvres, France' },
+        },
+      },
+    }],
+  }, 'session_token_123456');
+  assert.deepEqual(result[0], {
+    id: 'google:ChIJ-test',
+    name: 'Centre dentaire',
+    label: 'Centre dentaire, Louvres, France',
+    type: 'poi',
+    provider: 'google',
+    sessionToken: 'session_token_123456',
+  });
 });
 
 test('normalizes a realtime Navitia departure', () => {

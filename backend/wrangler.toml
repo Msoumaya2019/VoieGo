@@ -9,3 +9,4 @@ PRIM_TRAFFIC_BASE = "https://prim.iledefrance-mobilites.fr/marketplace/v2/naviti
 
 # Ajoutez le secret sans jamais le committer :
 # npx wrangler secret put PRIM_API_KEY
+# npx wrangler secret put GOOGLE_PLACES_API_KEY

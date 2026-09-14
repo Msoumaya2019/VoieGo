@@ -306,9 +306,19 @@ async function journeysResponse(url, env, cors) {
   const toId = validPlaceId(url.searchParams.get('toId'))
     ? url.searchParams.get('toId')
     : null;
+  const fromSessionToken = validGoogleSessionToken(url.searchParams.get('fromSessionToken'))
+    ? url.searchParams.get('fromSessionToken')
+    : null;
+  const toSessionToken = validGoogleSessionToken(url.searchParams.get('toSessionToken'))
+    ? url.searchParams.get('toSessionToken')
+    : null;
   const [from, to] = await Promise.all([
-    fromId ? Promise.resolve({ id: fromId, name: fromQuery }) : resolvePlace(base, env.PRIM_API_KEY, fromQuery),
-    toId ? Promise.resolve({ id: toId, name: toQuery }) : resolvePlace(base, env.PRIM_API_KEY, toQuery),
+    fromId
+      ? resolveRequestedPlace(fromId, fromQuery, fromSessionToken, env)
+      : resolvePlace(base, env.PRIM_API_KEY, fromQuery),
+    toId
+      ? resolveRequestedPlace(toId, toQuery, toSessionToken, env)
+      : resolvePlace(base, env.PRIM_API_KEY, toQuery),
   ]);
   const params = new URLSearchParams({
     from: from.id,
@@ -337,20 +347,133 @@ async function placesResponse(url, env, cors) {
   if (query.length < 3 || query.length > 120) {
     return json({ error: 'Saisissez au moins trois caractères.' }, 400, cors);
   }
+  const sessionToken = validGoogleSessionToken(url.searchParams.get('sessionToken'))
+    ? url.searchParams.get('sessionToken')
+    : null;
   const base = env.PRIM_NAVITIA_BASE || 'https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia';
   const params = new URLSearchParams({ q: query, count: '7' });
-  params.append('type[]', 'address');
   params.append('type[]', 'stop_area');
-  params.append('type[]', 'poi');
-  const payload = await primFetch(`${base}/places?${params}`, env.PRIM_API_KEY);
-  const places = (Array.isArray(payload.places) ? payload.places : [])
-    .filter((place) => place.id && (place.address || place.stop_area || place.poi))
-    .slice(0, 7)
-    .map(normalizePlaceSuggestion);
-  return json({ source: 'prim-navitia', places }, 200, {
+  const requests = [primFetch(`${base}/places?${params}`, env.PRIM_API_KEY)];
+  if (env.GOOGLE_PLACES_API_KEY) {
+    requests.push(fetchGooglePlaceSuggestions(query, sessionToken, env.GOOGLE_PLACES_API_KEY));
+  }
+  const [primResult, googleResult] = await Promise.allSettled(requests);
+  const primPlaces = primResult.status === 'fulfilled'
+    ? (Array.isArray(primResult.value.places) ? primResult.value.places : [])
+        .filter((place) => place.id && place.stop_area)
+        .slice(0, 4)
+        .map(normalizePlaceSuggestion)
+    : [];
+  const googlePlaces = googleResult?.status === 'fulfilled' ? googleResult.value : [];
+  if (primPlaces.length === 0 && googlePlaces.length === 0) {
+    if (primResult.status === 'rejected') throw primResult.reason;
+    if (googleResult?.status === 'rejected') throw googleResult.reason;
+  }
+  const places = deduplicatePlaceSuggestions([...googlePlaces, ...primPlaces]).slice(0, 8);
+  return json({
+    source: googlePlaces.length > 0 ? 'google-places+prim-navitia' : 'prim-navitia',
+    googleAttributionRequired: googlePlaces.length > 0,
+    places,
+  }, 200, {
     ...cors,
-    'Cache-Control': 'public, max-age=300',
+    'Cache-Control': 'private, max-age=0, no-store',
   });
+}
+
+async function fetchGooglePlaceSuggestions(query, sessionToken, apiKey) {
+  const response = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': [
+        'suggestions.placePrediction.placeId',
+        'suggestions.placePrediction.text.text',
+        'suggestions.placePrediction.structuredFormat.mainText.text',
+        'suggestions.placePrediction.structuredFormat.secondaryText.text',
+      ].join(','),
+    },
+    body: JSON.stringify({
+      input: query,
+      languageCode: 'fr',
+      regionCode: 'FR',
+      includedRegionCodes: ['fr'],
+      locationBias: {
+        circle: {
+          center: { latitude: 48.8566, longitude: 2.3522 },
+          radius: 50000,
+        },
+      },
+      ...(sessionToken ? { sessionToken } : {}),
+    }),
+  });
+  if (!response.ok) {
+    throw new ProxyError(`Google Places a répondu ${response.status}.`, 502);
+  }
+  const payload = await response.json();
+  return normalizeGoogleSuggestions(payload, sessionToken);
+}
+
+export function normalizeGoogleSuggestions(payload, sessionToken = null) {
+  return (Array.isArray(payload?.suggestions) ? payload.suggestions : [])
+    .map((suggestion) => suggestion.placePrediction)
+    .filter((prediction) => prediction?.placeId && prediction?.text?.text)
+    .slice(0, 5)
+    .map((prediction) => {
+      const name = prediction.structuredFormat?.mainText?.text || prediction.text.text;
+      const detail = prediction.structuredFormat?.secondaryText?.text || '';
+      return {
+        id: `google:${prediction.placeId}`,
+        name,
+        label: detail ? `${name}, ${detail}` : prediction.text.text,
+        type: 'poi',
+        provider: 'google',
+        ...(sessionToken ? { sessionToken } : {}),
+      };
+    });
+}
+
+function deduplicatePlaceSuggestions(places) {
+  const seen = new Set();
+  return places.filter((place) => {
+    const key = place.label.toLocaleLowerCase('fr').replace(/\s+/g, ' ').trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function resolveRequestedPlace(id, name, sessionToken, env) {
+  if (!id.startsWith('google:')) return { id, name };
+  if (!env.GOOGLE_PLACES_API_KEY) {
+    throw new ProxyError('La recherche Google Places n’est pas configurée.', 503);
+  }
+  const placeId = id.slice('google:'.length);
+  if (!placeId) throw new ProxyError('Lieu Google invalide.', 400);
+  const params = new URLSearchParams({ languageCode: 'fr', regionCode: 'FR' });
+  if (sessionToken) params.set('sessionToken', sessionToken);
+  const response = await fetch(
+    `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?${params}`,
+    {
+      headers: {
+        'X-Goog-Api-Key': env.GOOGLE_PLACES_API_KEY,
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location',
+      },
+    },
+  );
+  if (!response.ok) {
+    throw new ProxyError(`Google Places a répondu ${response.status}.`, 502);
+  }
+  const place = await response.json();
+  const latitude = Number(place.location?.latitude);
+  const longitude = Number(place.location?.longitude);
+  if (!validLocation({ lat: latitude, lon: longitude })) {
+    throw new ProxyError(`Coordonnées introuvables pour ${name}.`, 404);
+  }
+  return {
+    id: `${longitude};${latitude}`,
+    name: place.displayName?.text || place.formattedAddress || name,
+  };
 }
 
 function normalizePlaceSuggestion(place) {
@@ -367,11 +490,17 @@ function normalizePlaceSuggestion(place) {
     name,
     label: detail && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${detail}` : name,
     type: place.stop_area ? 'stop_area' : place.poi ? 'poi' : 'address',
+    provider: 'prim',
   };
 }
 
 function validPlaceId(value) {
   return typeof value === 'string' && value.length <= 200 && /^[A-Za-z0-9_:;.,-]+$/.test(value);
+}
+
+function validGoogleSessionToken(value) {
+  return typeof value === 'string' && value.length >= 16 && value.length <= 64 &&
+    /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 async function resolvePlace(base, apiKey, query) {
